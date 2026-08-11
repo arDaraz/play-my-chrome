@@ -1,6 +1,6 @@
 # Playwright My Chrome
 
-[![CI](https://github.com/AhmedDaraz-Ignite/playwright-my-chrome/actions/workflows/ci.yml/badge.svg)](https://github.com/AhmedDaraz-Ignite/playwright-my-chrome/actions/workflows/ci.yml)
+[![CI](https://github.com/arDaraz/playwright-my-chrome/actions/workflows/ci.yml/badge.svg)](https://github.com/arDaraz/playwright-my-chrome/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](#requirements)
 
@@ -66,7 +66,7 @@ npm install -g @playwright/cli@0.1.17
 Install the skill for Codex and Claude Code:
 
 ```bash
-npx skills install AhmedDaraz-Ignite/playwright-my-chrome \
+npx skills install arDaraz/playwright-my-chrome \
   --skill playwright-my-chrome \
   --global \
   --agent codex \
