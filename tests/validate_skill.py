@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import json
 import os
 import re
 import sys
@@ -13,7 +14,8 @@ def fail(message: str) -> None:
 repo_root = Path(__file__).resolve().parents[1]
 skill_dir = repo_root / "skills" / "playwright-my-chrome"
 skill_file = skill_dir / "SKILL.md"
-wrapper_file = skill_dir / "scripts" / "playwright-my-chrome.sh"
+cli_manifest_file = skill_dir / "cli" / "package.json"
+cli_lock_file = skill_dir / "cli" / "package-lock.json"
 root_license = repo_root / "LICENSE"
 skill_license = skill_dir / "LICENSE"
 macos_home_prefix = "/" + "Users" + "/"
@@ -80,6 +82,20 @@ if not skill_license.is_file():
 if skill_license.read_bytes() != root_license.read_bytes():
     fail("the installable skill license must match the repository license")
 
+manifest = json.loads(cli_manifest_file.read_text(encoding="utf-8"))
+lock = json.loads(cli_lock_file.read_text(encoding="utf-8"))
+dependency_fields = [key for key in manifest if key.lower().endswith("dependencies")]
+if dependency_fields != ["dependencies"] or list(manifest["dependencies"]) != ["@playwright/cli"]:
+    fail("cli/package.json must declare @playwright/cli as its only dependency")
+supported_version = manifest["dependencies"]["@playwright/cli"]
+if not re.fullmatch(r"\d+\.\d+\.\d+", supported_version):
+    fail(f"cli/package.json must pin an exact @playwright/cli version, not {supported_version!r}")
+if not re.fullmatch(r">=\d+\.\d+\.\d+", manifest.get("engines", {}).get("node", "")):
+    fail("cli/package.json must set engines.node as >=MAJOR.MINOR.PATCH for the wrapper to read")
+locked_version = lock.get("packages", {}).get("node_modules/@playwright/cli", {}).get("version")
+if locked_version != supported_version:
+    fail(f"cli/package-lock.json locks @playwright/cli {locked_version}, not {supported_version}")
+
 for path in repo_root.rglob("*"):
     if not path.is_file():
         continue
@@ -91,18 +107,11 @@ for path in repo_root.rglob("*"):
         fail(f"machine-specific home path found in {relative}")
     if "\u2013" in content or "\u2014" in content:
         fail(f"forbidden Unicode dash found in {relative}")
-
-wrapper_text = wrapper_file.read_text(encoding="utf-8")
-version_match = re.search(r'^supported_cli_version="([^"]+)"$', wrapper_text, re.MULTILINE)
-if not version_match:
-    fail("wrapper does not declare its supported Playwright CLI version")
-supported_version = version_match.group(1)
-for documentation in (
-    repo_root / "README.md",
-    repo_root / "SECURITY.md",
-    skill_file,
-):
-    if supported_version not in documentation.read_text(encoding="utf-8"):
-        fail(f"{documentation.name} does not mention supported CLI {supported_version}")
+    if (
+        supported_version in content
+        and relative.parts[0] != "docs"
+        and path.parent != cli_manifest_file.parent
+    ):
+        fail(f"{relative} spells the CLI version; read it from cli/package-lock.json instead")
 
 print("Agent Skill validation passed.")

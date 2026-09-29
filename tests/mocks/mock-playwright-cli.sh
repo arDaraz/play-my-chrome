@@ -6,12 +6,12 @@ state_file="${MOCK_SESSION_STATE_FILE:?MOCK_SESSION_STATE_FILE is required}"
 ps_output_file="${MOCK_PS_OUTPUT_FILE:?MOCK_PS_OUTPUT_FILE is required}"
 chrome_executable="${PLAYWRIGHT_MY_CHROME_EXECUTABLE:?Chrome executable is required}"
 runtime_dir="${PLAYWRIGHT_MY_CHROME_RUNTIME_DIR:?Runtime directory is required}"
-version="${MOCK_CLI_VERSION:-0.1.17}"
+version="${MOCK_CLI_VERSION:?MOCK_CLI_VERSION is required}"
 arguments=" $* "
 
 printf '%s\n' "$*" >>"$log_file"
 
-if [[ "$arguments" == *" --version "* ]]; then
+if [[ "$arguments" == *" --version "* || "$arguments" == *" -v "* ]]; then
   printf '%s\n' "$version"
   exit 0
 fi
@@ -23,8 +23,8 @@ if [[ "$arguments" == *" --json list "* ]]; then
   fi
 
   if [[ -f "$state_file" ]] && [[ "$(<"$state_file")" == "ready" ]]; then
-    printf '{"browsers":[{"name":"mychrome","status":"open","attached":true,"compatible":true,"browserType":"chrome","workspace":"%s"}]}\n' \
-      "$runtime_dir"
+    printf '{"browsers":[{"name":"mychrome","status":"open","attached":true,"compatible":%s,"browserType":"chrome","workspace":"%s"}]}\n' \
+      "${MOCK_SESSION_COMPATIBLE:-true}" "$runtime_dir"
   else
     printf '{"browsers":[]}\n'
   fi

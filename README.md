@@ -47,8 +47,8 @@ The skill installs on any agent. Running the browser automation needs:
 - Google Chrome
 - the official
   [Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm)
-- Node.js 22.20 or newer
-- `@playwright/cli` version 0.1.17
+- Node.js 22.20 or newer, with the npm that ships with it
+- network access to the npm registry the first time the skill sets itself up
 - Bash and the macOS Keychain
 - an agent that runs as the same desktop user as Chrome
 
@@ -56,12 +56,6 @@ A cloud agent cannot reach the Chrome on your Mac. It has to run in your own
 desktop session.
 
 ## Install
-
-Install the Playwright CLI at the version this skill supports:
-
-```bash
-npm install -g @playwright/cli@0.1.17
-```
 
 Install the skill for Codex and Claude Code:
 
@@ -76,6 +70,30 @@ npx skills install arDaraz/playwright-my-chrome \
 Use `--agent '*'` instead of the two `--agent` lines to install it for every
 agent the [Vercel Skills CLI](https://github.com/vercel-labs/skills) supports.
 To look at the repository first without installing anything, add `--list`.
+
+The skill does not use a global `playwright-cli`, and you do not need to
+install one. It keeps its own private copy of `@playwright/cli` at the exact
+version in
+[`cli/package-lock.json`](skills/playwright-my-chrome/cli/package-lock.json).
+Upgrading a global `playwright-cli` for other tools does not affect this skill.
+
+`npx skills install --global` puts the skill in
+`~/.agents/skills/playwright-my-chrome`, and the commands on this page use
+that path. If you installed it somewhere else, use that path instead.
+
+The first time the agent uses the skill, and after each skill update, the
+wrapper stops and asks for `setup`. The agent runs it for you. To run it
+yourself:
+
+```bash
+~/.agents/skills/playwright-my-chrome/scripts/playwright-my-chrome.sh setup
+```
+
+`setup` installs that exact version from npm with `npm ci --ignore-scripts`,
+so npm checks every package against the lockfile's integrity hash and runs no
+package install scripts. It refuses while the agent is connected to Chrome, so
+ask the agent to disconnect first. To force a clean reinstall, delete
+`~/Library/Caches/playwright-my-chrome/cli` and run `setup` again.
 
 The repository follows the
 [Agent Skills specification](https://agentskills.io/specification) and uses the
@@ -93,10 +111,13 @@ Do this once per macOS user and Chrome profile.
 3. Open the extension connection page. Press the circular arrow button to
    generate a new token, then press the copy button.
 4. While the token is still on the clipboard, ask your agent to configure
-   `$playwright-my-chrome`. You can also run the skill's
-   `scripts/store-extension-token.sh` yourself.
-5. Run `scripts/playwright-my-chrome.sh doctor`. It should say that the token
-   is stored and the CLI version is supported.
+   `$playwright-my-chrome`. You can also run
+   `~/.agents/skills/playwright-my-chrome/scripts/store-extension-token.sh`
+   yourself.
+5. Run
+   `~/.agents/skills/playwright-my-chrome/scripts/playwright-my-chrome.sh doctor`.
+   It should say that the token is stored and the CLI version is supported. If
+   it says `unsupported`, run the same script with `setup` first.
 
 Never paste the token into a chat or a terminal command. The setup script
 checks it without printing it, saves it in the macOS Keychain, and clears the
@@ -132,7 +153,7 @@ The full procedure the agent follows lives in
 Run this first. It reports what is missing without showing the token:
 
 ```bash
-scripts/playwright-my-chrome.sh doctor
+~/.agents/skills/playwright-my-chrome/scripts/playwright-my-chrome.sh doctor
 ```
 
 | What it says | What to do |
@@ -142,13 +163,13 @@ scripts/playwright-my-chrome.sh doctor
 | `token: missing` | Redo [One-time setup](#one-time-setup). |
 | `session: missing` | Normal before the first connection. Approve a connect. |
 | `session: stale` | The old connection died. Approve a new connect. |
-| `compatibility: unsupported` | Install the CLI version the line asks for. |
+| `compatibility: unsupported` | Run the same script with `setup`. |
 | `process-token: exposed` | Generate a new token. See [SECURITY.md](SECURITY.md). |
 
 To check that every safeguard is active:
 
 ```bash
-scripts/playwright-my-chrome.sh safety-audit
+~/.agents/skills/playwright-my-chrome/scripts/playwright-my-chrome.sh safety-audit
 ```
 
 ## Development
@@ -161,8 +182,8 @@ Run the release checks on macOS:
 npx skills@1.5.21 install . --list
 ```
 
-The tests use fake Keychain, process list, clipboard, and Playwright commands.
-They never open or control your real browser.
+The tests use fake Keychain, process list, clipboard, npm, and Playwright
+commands. They never open or control your real browser.
 
 ## Contributing
 
@@ -175,7 +196,7 @@ profile. Read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 Read [SECURITY.md](SECURITY.md) before you install. Report vulnerabilities
 privately through GitHub's security advisory workflow, not in a public issue.
 
-One limit worth knowing up front: while a session is attached, the Playwright
+Know this limit before you install. While a session is attached, the Playwright
 CLI daemon keeps the extension token in its environment. Any process running as
 the same macOS user may be able to read it. That is upstream behavior, not
 something this wrapper adds, and it cannot be fixed here. Disconnect when you

@@ -42,8 +42,8 @@ The wrapper:
   same local desktop user;
 - isolates that session in a private, agent-host-neutral `.playwright`
   workspace;
-- invokes an already-installed Playwright CLI without patching, installing, or
-  reconfiguring the shared executable;
+- runs only its own private copy of Playwright CLI, installed by `setup` from
+  the skill's lockfile, and never runs or changes a global `playwright-cli`;
 - confirms that normal user Chrome is already running before every fresh
   attachment and refuses to launch Chrome itself;
 - requires exactly one normal Chrome main process, verifies that the complete
@@ -71,7 +71,6 @@ Default shared state:
 
 These environment variables provide configuration overrides:
 
-- `PLAYWRIGHT_MY_CHROME_CLI`
 - `PLAYWRIGHT_MY_CHROME_NODE`
 - `PLAYWRIGHT_MY_CHROME_RUNTIME_DIR`
 - `PLAYWRIGHT_MY_CHROME_SESSION`
@@ -79,12 +78,14 @@ These environment variables provide configuration overrides:
 - `PLAYWRIGHT_MY_CHROME_KEYCHAIN_ACCOUNT`
 - `PLAYWRIGHT_MY_CHROME_EXECUTABLE`
 
-CLI and Node overrides must be absolute paths to trusted, compatible
-executables. Without overrides, the wrapper checks only standard absolute
-NVM, Volta, Homebrew, and `/usr/local` locations; it never selects a
-token-bearing CLI through caller-controlled `PATH`. A runtime override must
-also be absolute and point to a dedicated, non-symlink directory owned by the
-desktop user. The wrapper creates new runtime directories privately and
+The Node override must be an absolute path to a trusted Node.js executable.
+Without it, the wrapper checks only standard absolute NVM, Volta, Homebrew, and
+`/usr/local` locations. It never selects Node through caller-controlled `PATH`.
+The wrapper uses the first Node.js that meets the `engines.node` minimum in
+`cli/package.json`, starting with the newest qualifying nvm install. When none
+qualifies, it exits with status 1 and names the minimum.
+A runtime override must also be absolute and point to a dedicated, non-symlink
+directory owned by the desktop user. The wrapper creates new runtime directories privately and
 refuses to claim a non-empty unrelated directory or modify its permissions.
 The Chrome executable override is only for another trusted Chrome installation
 such as Chrome Canary. The default is standard macOS Google Chrome.
@@ -114,14 +115,43 @@ use.
 ## One-time configuration
 
 This local implementation requires macOS, Google Chrome, the official
-Playwright Extension, Bash, Node.js 22.20 or newer, Playwright CLI, and macOS
-Keychain. Different agent hosts can load the skill from any location, but they
-must run as the same logged-in desktop user to share that Chrome instance.
+Playwright Extension, Bash, Node.js 22.20 or newer with its bundled npm, and
+macOS Keychain. Different agent hosts can load the skill from any location, but
+they must run as the same logged-in desktop user to share that Chrome instance.
 
-This release requires `@playwright/cli` 0.1.17 and never installs or upgrades
-it. The wrapper refuses browser commands under a different version rather than
-assuming forward compatibility. `doctor` reports the resolved executable,
-version, and compatibility state.
+The skill pins one exact `@playwright/cli` version in `cli/package-lock.json`.
+The wrapper runs a private copy of that version from `<runtime>/cli` and
+ignores any global `playwright-cli`. When the private copy is missing,
+incomplete, or from another skill release, every browser command exits with
+status 2 before it reads the token or touches Chrome. The message names this
+command:
+
+```bash
+"$SKILL_ROOT/scripts/playwright-my-chrome.sh" setup
+```
+
+On exit status 2, run `setup`, then retry the command once. `setup` needs
+network access to the npm registry and is safe to run twice. The first use and
+every skill update that ships a new lockfile each need one `setup`. To force a
+reinstall, delete `<runtime>/cli` and run `setup`.
+
+`setup` refuses while the `mychrome` session is attached, because it replaces
+the CLI that session runs from. When that happens, run `disconnect`, then
+`setup`, and ask for approval again before `connect`. `disconnect` still works
+with an intact copy from an earlier skill release. If the copy is damaged and a
+process still runs from it, `setup` names that process ID. It also refuses
+when it cannot read the process list. Report either case to the user, and
+never stop that process yourself.
+
+A `SECURITY:` message about `<runtime>/cli` with exit status 6 means that
+directory is a symbolic link, belongs to another user, or does not have mode
+0700. Stop and report it to the user. `setup` refuses to replace it.
+
+`--help`, `-h`, and a call with no command print the wrapper's own commands.
+They add the Playwright CLI command list only when the private copy is
+supported. `--version` and `-v` print only the private CLI version, and exit
+with status 2 before `setup`. `doctor` reports the private CLI path, its version, the required
+version, and compatibility.
 
 Complete these steps once per macOS user and Chrome profile:
 
@@ -189,7 +219,8 @@ task; do not request it again. Then run:
 `connect` must fail without opening a browser unless exactly one normal Chrome
 main process is already running. Do not bypass that preflight, call the
 underlying `attach` directly, or use `open`. The wrapper blocks `attach`,
-`open`, `show`, `install`, `close-all`, and `kill-all`.
+`open`, `show`, `install`, `close-all`, and `kill-all`. The wrapper's own
+`setup` command is not the blocked browser `install`.
 
 Do not infer approval from a generic browser task. Once `connect` reports ready,
 keep the session alive and issue ordinary commands without an additional setup step.
@@ -249,10 +280,10 @@ Inspect active Playwright sessions before cleanup:
 "$SKILL_ROOT/scripts/playwright-my-chrome.sh" cleanup-plan
 ```
 
-Close only a named, non-attached Playwright browser from its owning workspace
-with `playwright-cli -s=<name> close`. Detach an attached external browser.
-Let ChatGPT browser control, ChromeDriver, and other test runners manage their
-own Chrome processes. Never use this skill to run `close-all`, `kill-all`, or a
+This skill controls only its `mychrome` session. Leave every other session that
+`cleanup-plan` lists to the tool that owns it, and report it to the user. Let
+ChatGPT browser control, ChromeDriver, and other test runners manage their own
+Chrome processes. Never use this skill to run `close-all`, `kill-all`, or a
 machine-wide Chrome kill.
 
 Check an existing owned session without taking a new connection:
@@ -264,8 +295,19 @@ Check an existing owned session without taking a new connection:
 `ensure` fails closed when the session is missing or stale. Only `connect`
 performs a fresh attachment, and only after explicit user approval.
 
-If the wrapper reports a missing or invalid token, ask the user to regenerate
-and copy it from the extension, then run:
+`connect` exits with status 3, before it attaches, when the Keychain token is
+missing or does not match the extension token shape. The wrapper never prints
+the stored value. If the stored value starts with
+`PLAYWRIGHT_MCP_EXTENSION_TOKEN=`, a tool other than `store-extension-token.sh`
+wrote it. This command strips the prefix and stores the token again in place:
+
+```bash
+"$SKILL_ROOT/scripts/store-extension-token.sh" \
+  --migrate-from-service playwright-my-chrome.extension-token
+```
+
+For any other malformed or missing token, ask the user to regenerate and copy
+it from the extension, then run:
 
 ```bash
 "$SKILL_ROOT/scripts/store-extension-token.sh"
@@ -301,9 +343,10 @@ that fallback.
   environment while the owned session is alive. Processes running as the same
   macOS user may be able to inspect it. Disconnect after use and prefer a
   separate Chrome profile for higher-risk automation.
-- Keep the trusted CLI and macOS system-command paths under the desktop user's
-  control; the wrapper rejects relative CLI paths and does not use `PATH` shims
-  for secret-bearing system operations.
+- Keep Node.js, npm, and the private runtime directory under the desktop
+  user's control. `setup` installs the CLI only from the lockfile's integrity
+  hashes and runs no package install scripts. The wrapper does not use `PATH`
+  shims for secret-bearing system operations.
 - To revoke this skill's stored-token access, delete the configured Keychain
   item and regenerate the extension token:
 

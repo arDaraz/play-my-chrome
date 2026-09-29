@@ -20,10 +20,12 @@ plainly:
 - The wrapper reads one extension token from macOS Keychain, and only when you
   approve a fresh connection or run token-rotation verification.
 - Browser commands run with the permissions of the logged-in macOS user.
-- The skill runs the `@playwright/cli` executable you installed separately.
+- The skill runs its own private copy of `@playwright/cli`, which its `setup`
+  command installs from the npm registry.
 
-The agent, the repository holding your task, the installed Playwright CLI, the
-Playwright Extension, Chrome, and your macOS account are all trusted components.
+The agent, the repository holding your task, Node.js and npm, the
+`@playwright/cli` release pinned in the skill's lockfile, the Playwright
+Extension, Chrome, and your macOS account are all trusted components.
 This skill does not make an untrusted agent safe. If you would not give the
 agent your browser, do not install it.
 
@@ -48,7 +50,17 @@ agent your browser, do not install it.
   CLI child and its direct descendants, tries a named-session detach, reports
   any detach failure instead of claiming success, removes the private
   artifacts, and requires token rotation.
-- The public release pins the supported `@playwright/cli` version.
+- The skill pins one exact `@playwright/cli` version in a lockfile. `setup`
+  installs it with `npm ci --ignore-scripts`, so npm checks every package
+  against its integrity hash and runs no package install scripts.
+- The wrapper never runs a global `playwright-cli`. It runs only the private
+  copy in its runtime directory, through the resolved Node.js.
+- The private CLI directory must be a real directory owned by the current user
+  with mode 0700. Otherwise every command fails closed with exit status 6, and
+  `setup` refuses to replace it.
+- The wrapper uses the private copy only when its lockfile matches the shipped
+  one byte for byte and every locked package is installed at its locked
+  version.
 - Development dependencies are exact and integrity-locked.
 
 ## What it cannot defend against
@@ -57,8 +69,9 @@ These are listed so nobody assumes they are covered:
 
 - Any connected agent can do whatever you could do in the exposed tabs.
 - Browser and extension vulnerabilities are outside this project's control.
-- A malicious replacement for the trusted Playwright CLI can read the token
-  handed to it during attachment.
+- Anyone who can change the Node.js installation or the private runtime
+  directory can replace the Playwright CLI and read the token handed to it
+  during attachment.
 - The upstream Playwright CLI daemon inherits the token-bearing environment for
   as long as the session is attached. Other processes running as the same macOS
   user may be able to inspect it. `disconnect` shortens that window. It cannot
@@ -74,6 +87,9 @@ token.
 
 ## Supported versions
 
-Security fixes ship for the latest tagged release. The current release supports
-`@playwright/cli` 0.1.17 exactly, and fails closed on browser commands under
-any other version.
+Security fixes ship for the latest tagged release. Each release supports
+exactly the `@playwright/cli` version recorded in
+`skills/playwright-my-chrome/cli/package-lock.json`. `setup` installs that
+version privately, with integrity checks and `--ignore-scripts`. Browser
+commands fail closed when the private copy is missing or reports any other
+version.
