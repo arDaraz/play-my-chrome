@@ -13,7 +13,6 @@
     "verify": "npm run lint && npm test"
   },
   "devDependencies": {
-    "@playwright/cli": "0.1.17",
     "skills": "1.5.21"
   }
 }

@@ -11,8 +11,8 @@ security_bin="/usr/bin/security"
 extension_connect_url="chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/connect.html"
 chrome_executable="${PLAYWRIGHT_MY_CHROME_EXECUTABLE:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 ps_bin="/bin/ps"
-supported_cli_version="0.1.17"
 attach_timeout_attempts=600
+setup_timeout_attempts=6000
 default_runtime_dir="$HOME/Library/Caches/playwright-my-chrome"
 runtime_dir="${PLAYWRIGHT_MY_CHROME_RUNTIME_DIR:-$default_runtime_dir}"
 while [[ "$runtime_dir" != "/" && "$runtime_dir" == */ ]]; do
@@ -24,6 +24,13 @@ output_path_file="$runtime_dir/session-output-path"
 token_rotation_baseline_file="$runtime_dir/token-rotation-baseline.sha256"
 token_rotation_chrome_pid_file="$runtime_dir/token-rotation-chrome.pid"
 runtime_claim="$runtime_dir/.playwright-my-chrome-runtime"
+cli_manifest="$skill_dir/cli/package.json"
+cli_lock="$skill_dir/cli/package-lock.json"
+private_cli_dir="$runtime_dir/cli"
+private_cli_entry="$private_cli_dir/node_modules/@playwright/cli/playwright-cli.js"
+setup_command="\"$skill_dir/scripts/playwright-my-chrome.sh\" setup"
+setup_staging_dir=""
+npm_bin=""
 lock_held=0
 bounded_child_pid=""
 attachment_requires_recovery=0
@@ -33,6 +40,8 @@ if [[ "$test_mode" == "1" ]]; then
   security_bin="${PLAYWRIGHT_MY_CHROME_TEST_SECURITY_BIN:-$security_bin}"
   ps_bin="${PLAYWRIGHT_MY_CHROME_TEST_PS_BIN:-$ps_bin}"
   attach_timeout_attempts="${PLAYWRIGHT_MY_CHROME_TEST_ATTACH_TIMEOUT_ATTEMPTS:-$attach_timeout_attempts}"
+  npm_bin="${PLAYWRIGHT_MY_CHROME_TEST_NPM_BIN:-}"
+  setup_timeout_attempts="${PLAYWRIGHT_MY_CHROME_TEST_SETUP_TIMEOUT_ATTEMPTS:-$setup_timeout_attempts}"
 elif [[ "$test_mode" != "0" ]]; then
   echo "ERROR: PLAYWRIGHT_MY_CHROME_TEST_MODE must be 0 or 1." >&2
   exit 1
@@ -42,8 +51,15 @@ die() {
   exit 1
 }
 
+private_dir_is_valid() {
+  [[ -d "$1" && ! -L "$1" && -O "$1" ]] || return 1
+  [[ "$(/usr/bin/stat -f '%Lp' "$1")" == "700" ]]
+}
+
 [[ "$attach_timeout_attempts" =~ ^[1-9][0-9]*$ ]] ||
   die "The attach timeout must be a positive number of 100ms attempts."
+[[ "$setup_timeout_attempts" =~ ^[1-9][0-9]*$ ]] ||
+  die "The setup timeout must be a positive number of 100ms attempts."
 [[ -n "$session_name" ]] || die "The session name cannot be empty."
 [[ -n "$keychain_service" ]] || die "The Keychain service cannot be empty."
 [[ -n "$keychain_account" ]] || die "The Keychain account cannot be empty."
@@ -62,65 +78,6 @@ fi
 [[ "$ps_bin" == /* && -x "$ps_bin" ]] ||
   die "The configured process-list executable is unavailable."
 
-resolve_cli() {
-  local candidate=""
-  local candidate_base=""
-  local candidate_dir=""
-  local best=""
-
-  if [[ -n "${PLAYWRIGHT_MY_CHROME_CLI:-}" ]]; then
-    candidate="$PLAYWRIGHT_MY_CHROME_CLI"
-    [[ "$candidate" == /* ]] || {
-      echo "Configured Playwright CLI path must be absolute: $candidate" >&2
-      return 1
-    }
-    [[ -x "$candidate" ]] || {
-      echo "Configured Playwright CLI is not executable: $candidate" >&2
-      return 1
-    }
-  else
-    shopt -s nullglob
-    for candidate in "$HOME"/.nvm/versions/node/*/bin/playwright-cli; do
-      if [[ -z "$best" || "$candidate" -nt "$best" ]]; then
-        best="$candidate"
-      fi
-    done
-    shopt -u nullglob
-
-    if [[ -n "$best" ]]; then
-      candidate="$best"
-    else
-      for candidate in \
-        "$HOME/.volta/bin/playwright-cli" \
-        /opt/homebrew/bin/playwright-cli \
-        /usr/local/bin/playwright-cli; do
-        if [[ -x "$candidate" ]]; then
-          break
-        fi
-        candidate=""
-      done
-    fi
-  fi
-
-  [[ -n "$candidate" && -x "$candidate" ]] || return 1
-  if [[ "$candidate" != /* ]]; then
-    candidate="$PWD/$candidate"
-  fi
-
-  candidate_dir="${candidate%/*}"
-  candidate_base="${candidate##*/}"
-  candidate_dir="$(cd -P "$candidate_dir" 2>/dev/null && pwd)" || return 1
-  printf '%s/%s\n' "$candidate_dir" "$candidate_base"
-}
-
-cli_bin="$(resolve_cli)" || {
-  echo "Playwright CLI was not found." >&2
-  echo "Configure PLAYWRIGHT_MY_CHROME_CLI with an absolute trusted executable." >&2
-  echo "This skill never installs or upgrades the shared Playwright CLI." >&2
-  exit 2
-}
-
-cli_dir="${cli_bin%/*}"
 resolve_node() {
   local best=""
   local candidate=""
@@ -129,11 +86,6 @@ resolve_node() {
     candidate="$PLAYWRIGHT_MY_CHROME_NODE"
     [[ "$candidate" == /* && -x "$candidate" ]] || return 1
     printf '%s\n' "$candidate"
-    return 0
-  fi
-
-  if [[ -x "$cli_dir/node" ]]; then
-    printf '%s\n' "$cli_dir/node"
     return 0
   fi
 
@@ -162,16 +114,22 @@ resolve_node() {
   return 1
 }
 
-json_node="$(resolve_node)" ||
+node_bin="$(resolve_node)" ||
   die "Node.js was not found in a trusted absolute location."
-cli_shebang=""
-IFS= read -r cli_shebang <"$cli_bin" || true
-if [[ "$cli_shebang" == "#!"*"node"* ]]; then
-  cli_command=("$json_node" "$cli_bin")
-else
-  cli_command=("$cli_bin")
+[[ -n "$npm_bin" ]] || npm_bin="${node_bin%/*}/npm"
+cli_command=("$node_bin" "$private_cli_entry")
+
+supported_cli_version="$(
+  "$node_bin" -e '
+    const lock = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    process.stdout.write(lock.packages["node_modules/@playwright/cli"].version);
+  ' "$cli_lock" 2>/dev/null
+)" || supported_cli_version=""
+if [[ ! "$supported_cli_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "ERROR: The skill's Playwright CLI lockfile is missing or unreadable: $cli_lock" >&2
+  echo "Reinstall the skill. No browser command was attempted." >&2
+  exit 2
 fi
-unset cli_shebang
 
 if [[ -L "$runtime_dir" ]]; then
   die "The runtime cannot be a symbolic link: $runtime_dir"
@@ -226,6 +184,15 @@ fi
 [[ "$(/usr/bin/stat -f '%Lp' "$runtime_dir/.playwright")" == "700" ]] ||
   die "The private Playwright workspace must have mode 0700."
 
+# This check exits 6, not 2, because setup cannot repair a replaced CLI
+# directory and the CLI receives the token.
+if [[ -e "$private_cli_dir" || -L "$private_cli_dir" ]] &&
+  ! private_dir_is_valid "$private_cli_dir"; then
+  echo "SECURITY: The private Playwright CLI must be a directory you own with mode 0700, not a symbolic link: $private_cli_dir" >&2
+  echo "Inspect and remove it, then run setup. No browser command was attempted." >&2
+  exit 6
+fi
+
 # All secret-bearing processing below uses resolved executables plus trusted
 # macOS system utilities rather than caller-controlled PATH shims.
 PATH="/usr/bin:/bin:/usr/sbin:/sbin"
@@ -271,7 +238,7 @@ write_private_state_file() {
     /bin/rm -f "$temporary"
     return 1
   fi
-  if ! "$json_node" -e '
+  if ! "$node_bin" -e '
     const fs = require("fs");
     fs.renameSync(process.argv[1], process.argv[2]);
   ' "$temporary" "$target"; then
@@ -288,25 +255,171 @@ remove_private_state_file() {
   /bin/rm -f "$target"
 }
 
-current_cli_version() {
-  run_cli_bounded 80 --version 2>/dev/null | awk 'NR == 1 { print $1; exit }'
+cli_entry_version() {
+  run_bounded_impl "" 80 "$runtime_dir" \
+    env NO_UPDATE_NOTIFIER=1 "$node_bin" "$1" --version 2>/dev/null |
+    awk 'NR == 1 { print $1; exit }'
 }
 
-require_supported_cli() {
+# Prints the locked @playwright/cli version only when every locked package is
+# installed at its locked version.
+installed_lock_cli_version() {
+  "$node_bin" -e '
+    const fs = require("fs");
+    const path = require("path");
+    const root = process.argv[1];
+    const read = file => JSON.parse(fs.readFileSync(path.join(root, file), "utf8"));
+    const lock = read("package-lock.json");
+    for (const [location, entry] of Object.entries(lock.packages)) {
+      if (!location || entry.dev) continue;
+      const manifest = path.join(location, "package.json");
+      if (entry.optional && !fs.existsSync(path.join(root, manifest))) continue;
+      if (read(manifest).version !== entry.version) process.exit(1);
+    }
+    process.stdout.write(lock.packages["node_modules/@playwright/cli"].version);
+  ' "$1" 2>/dev/null
+}
+
+# The fault functions print why a CLI copy is unusable, or nothing.
+intact_cli_fault() {
+  local cli_dir="$1"
+  local entry="$cli_dir/node_modules/@playwright/cli/playwright-cli.js"
+  local locked_version=""
   local version=""
 
-  if ! version="$(current_cli_version)"; then
-    version=""
+  if [[ ! -f "$entry" ]]; then
+    echo "is not installed"
+  elif ! locked_version="$(installed_lock_cli_version "$cli_dir")"; then
+    echo "is incomplete or was changed after setup"
+  else
+    version="$(cli_entry_version "$entry" || true)"
+    if [[ "$version" != "$locked_version" ]]; then
+      echo "reports version ${version:-unknown}, not its locked $locked_version"
+    fi
   fi
-  if [[ "$version" == "$supported_cli_version" ]]; then
-    return 0
-  fi
+}
 
-  echo "Unsupported Playwright CLI version: ${version:-unknown}" >&2
-  echo "This release requires @playwright/cli $supported_cli_version." >&2
-  echo "See the repository README for installation instructions." >&2
+supported_cli_fault() {
+  local fault=""
+
+  fault="$(intact_cli_fault "$private_cli_dir")"
+  if [[ -z "$fault" ]] &&
+    ! /usr/bin/cmp -s "$cli_lock" "$private_cli_dir/package-lock.json"; then
+    fault="was installed from another skill release's lockfile"
+  fi
+  printf '%s' "$fault"
+}
+
+require_usable_cli() {
+  local fault="$1"
+
+  [[ -z "$fault" ]] && return 0
+  echo "The skill's private Playwright CLI $fault." >&2
+  echo "This release requires @playwright/cli $supported_cli_version. Install it with:" >&2
+  echo "  $setup_command" >&2
   echo "No browser command was attempted." >&2
   return 2
+}
+
+remove_setup_staging() {
+  if [[ -n "$setup_staging_dir" ]]; then
+    /bin/rm -rf "$setup_staging_dir"
+    setup_staging_dir=""
+  fi
+}
+
+remove_abandoned_setup_staging() {
+  local abandoned=""
+
+  shopt -s nullglob
+  for abandoned in "$runtime_dir"/.cli-setup.*; do
+    if private_dir_is_valid "$abandoned"; then
+      /bin/rm -rf "$abandoned"
+    else
+      echo "WARNING: Left an unexpected setup path in place: $abandoned" >&2
+    fi
+  done
+  shopt -u nullglob
+}
+
+require_detached_session() {
+  [[ -z "$(intact_cli_fault "$private_cli_dir")" ]] || return 0
+  if [[ "$(session_state)" == "ready" ]]; then
+    echo "Session '$session_name' is attached through the current private Playwright CLI." >&2
+    echo "Run 'disconnect' first, then run setup again. Setup never detaches on its own." >&2
+    return 1
+  fi
+}
+
+stage_private_cli() {
+  local staged_cli="$1"
+  local fault=""
+  local status=0
+
+  /bin/mkdir "$staged_cli" || return 1
+  /bin/cp "$cli_manifest" "$cli_lock" "$staged_cli/" || return 1
+  run_bounded_impl "" "$setup_timeout_attempts" "$staged_cli" \
+    env PATH="${node_bin%/*}:$PATH" NO_UPDATE_NOTIFIER=1 "$npm_bin" ci \
+    --ignore-scripts --omit=dev --no-audit --no-fund || status=$?
+  if (( status == 124 )); then
+    echo "npm ci timed out; no private Playwright CLI was installed." >&2
+    return 1
+  elif (( status != 0 )); then
+    echo "npm ci failed; no private Playwright CLI was installed." >&2
+    return 1
+  fi
+
+  fault="$(intact_cli_fault "$staged_cli")"
+  if [[ -n "$fault" ]]; then
+    echo "The installed Playwright CLI $fault." >&2
+    echo "No private Playwright CLI was installed." >&2
+    return 1
+  fi
+}
+
+replace_private_cli() {
+  local staged_cli="$1"
+  local previous_cli="$setup_staging_dir/previous"
+
+  if [[ -e "$private_cli_dir" ]]; then
+    /bin/mv "$private_cli_dir" "$previous_cli" || return 1
+  fi
+  if ! /bin/mv "$staged_cli" "$private_cli_dir"; then
+    if [[ -e "$previous_cli" ]]; then
+      /bin/mv "$previous_cli" "$private_cli_dir" ||
+        echo "Could not restore the previous private Playwright CLI." >&2
+    fi
+    return 1
+  fi
+}
+
+install_private_cli() {
+  remove_abandoned_setup_staging
+  if [[ -z "$(supported_cli_fault)" ]]; then
+    echo "@playwright/cli $supported_cli_version is already installed at $private_cli_dir."
+    return 0
+  fi
+  require_detached_session || return 1
+  if [[ "$npm_bin" != /* || ! -x "$npm_bin" ]]; then
+    echo "npm was not found next to Node.js: $npm_bin" >&2
+    return 1
+  fi
+
+  setup_staging_dir="$(/usr/bin/mktemp -d "$runtime_dir/.cli-setup.XXXXXX")" ||
+    return 1
+  stage_private_cli "$setup_staging_dir/cli" || return 1
+  replace_private_cli "$setup_staging_dir/cli" || return 1
+  echo "Installed @playwright/cli $supported_cli_version at $private_cli_dir."
+}
+
+setup_private_cli() {
+  local status=0
+
+  acquire_lock || return 1
+  install_private_cli || status=$?
+  remove_setup_staging
+  release_lock
+  return "$status"
 }
 
 run_cli_redacted() {
@@ -366,23 +479,24 @@ terminate_active_bounded_child() {
   terminate_bounded_process "$child_pid"
 }
 
-run_cli_bounded_impl() {
+run_bounded_impl() {
   local attempt=0
   local child_pid=""
   local max_attempts="${2:?missing timeout attempts}"
   local output_file="$1"
   local status=0
-  shift 2
+  local work_dir="${3:?missing working directory}"
+  shift 3
 
   if [[ -n "$output_file" ]]; then
     (
-      cd "$runtime_dir"
-      exec env NO_UPDATE_NOTIFIER=1 "${cli_command[@]}" "$@"
+      cd "$work_dir"
+      exec "$@"
     ) >"$output_file" 2>&1 &
   else
     (
-      cd "$runtime_dir"
-      exec env NO_UPDATE_NOTIFIER=1 "${cli_command[@]}" "$@"
+      cd "$work_dir"
+      exec "$@"
     ) &
   fi
   child_pid=$!
@@ -410,7 +524,8 @@ run_cli_bounded() {
   local max_attempts="${1:?missing timeout attempts}"
   shift
 
-  run_cli_bounded_impl "" "$max_attempts" "$@"
+  run_bounded_impl "" "$max_attempts" "$runtime_dir" \
+    env NO_UPDATE_NOTIFIER=1 "${cli_command[@]}" "$@"
 }
 
 run_cli_bounded_to_file() {
@@ -419,7 +534,8 @@ run_cli_bounded_to_file() {
   shift 2
 
   [[ "$output_file" == /* ]] || return 1
-  run_cli_bounded_impl "$output_file" "$max_attempts" "$@"
+  run_bounded_impl "$output_file" "$max_attempts" "$runtime_dir" \
+    env NO_UPDATE_NOTIFIER=1 "${cli_command[@]}" "$@"
 }
 
 read_token() {
@@ -438,8 +554,11 @@ read_token() {
   )"
 
   if [[ ! "$token" =~ ^[A-Za-z0-9_-]{32,128}$ ]]; then
-    echo "Playwright Extension token is missing or invalid in macOS Keychain." >&2
-    echo "Regenerate and copy it in the extension, then run:" >&2
+    echo "Playwright Extension token is missing or malformed in macOS Keychain." >&2
+    echo "No browser connection was attempted." >&2
+    echo "If it carries a copied PLAYWRIGHT_MCP_EXTENSION_TOKEN= prefix, repair it in place:" >&2
+    echo "  $skill_dir/scripts/store-extension-token.sh --migrate-from-service $keychain_service" >&2
+    echo "Otherwise regenerate and copy it in the extension, then run:" >&2
     echo "  $skill_dir/scripts/store-extension-token.sh" >&2
     return 1
   fi
@@ -682,10 +801,6 @@ normal_chrome_pids() {
     /usr/bin/sort -n -u
 }
 
-normal_chrome_pid() {
-  normal_chrome_pids | awk 'NR == 1 { print; exit }'
-}
-
 require_running_normal_chrome() {
   local count=0
   local pid=""
@@ -738,7 +853,7 @@ session_state_once() {
   fi
 
   printf '%s' "$payload" |
-    "$json_node" -e '
+    "$node_bin" -e '
       let input = "";
       process.stdin.setEncoding("utf8");
       process.stdin.on("data", chunk => input += chunk);
@@ -790,7 +905,7 @@ conflicting_attached_chrome_sessions() {
   payload="$(run_cli_bounded 80 --json list --all 2>/dev/null)" || return 2
   result="$(
     printf '%s' "$payload" |
-      "$json_node" -e '
+      "$node_bin" -e '
         let input = "";
         process.stdin.setEncoding("utf8");
         process.stdin.on("data", chunk => input += chunk);
@@ -1139,8 +1254,7 @@ finalize_sanitation() {
 }
 
 lock_directory_is_valid() {
-  [[ -d "$lock_dir" && ! -L "$lock_dir" && -O "$lock_dir" ]] || return 1
-  [[ "$(/usr/bin/stat -f '%Lp' "$lock_dir")" == "700" ]]
+  private_dir_is_valid "$lock_dir"
 }
 
 lock_pid_file_is_valid() {
@@ -1247,6 +1361,7 @@ cleanup_on_exit() {
     unset token 2>/dev/null || true
   fi
   terminate_active_bounded_child
+  remove_setup_staging
   if (( attachment_recovery == 1 )); then
     echo "SECURITY: Attachment was interrupted; running targeted recovery." >&2
     detach_failed_attachment || true
@@ -1344,7 +1459,7 @@ attach_session() {
     return 1
   fi
 
-  if ! "$json_node" -e '
+  if ! "$node_bin" -e '
     const fs = require("fs");
     fs.writeFileSync(
       process.argv[1],
@@ -1555,19 +1670,25 @@ doctor() {
   local chrome_count=0
   local chrome_pid=""
   local chrome_pids=""
-  local compatibility="unsupported"
+  local compatibility=""
+  local fault=""
   local process_token_state=""
   local rotation=""
   local state=""
   local token_state="missing"
   local version=""
 
-  version="$(current_cli_version || true)"
-  [[ -n "$version" ]] || version="unknown"
-  if [[ "$version" == "$supported_cli_version" ]]; then
-    compatibility="supported"
+  version="not installed"
+  if [[ -f "$private_cli_entry" ]]; then
+    version="$(cli_entry_version "$private_cli_entry" || true)"
+    [[ -n "$version" ]] || version="unknown"
+  fi
+  fault="$(supported_cli_fault)"
+  if [[ -z "$fault" ]]; then
+    compatibility="supported (requires $supported_cli_version)"
     state="$(session_state)"
   else
+    compatibility="unsupported (requires $supported_cli_version; private CLI $fault; run setup)"
     state="not checked (unsupported CLI)"
   fi
   token_is_stored && token_state="stored"
@@ -1580,9 +1701,9 @@ doctor() {
   rotation="$(rotation_metadata_state)"
 
   echo "Playwright My Chrome"
-  echo "cli:       $cli_bin"
+  echo "cli:       $private_cli_dir"
   echo "version:   $version"
-  echo "compatibility: $compatibility (requires $supported_cli_version)"
+  echo "compatibility: $compatibility"
   echo "token:     $token_state"
   echo "session:   $state"
   if (( chrome_count == 1 )); then
@@ -1606,7 +1727,7 @@ cleanup_plan() {
   fi
 
   printf '%s' "$payload" |
-    "$json_node" -e '
+    "$node_bin" -e '
       let input = "";
       process.stdin.setEncoding("utf8");
       process.stdin.on("data", chunk => input += chunk);
@@ -1631,8 +1752,7 @@ cleanup_plan() {
           process.stdout.write(
             "session: " + browser.name + "\n" +
             "workspace: " + browser.workspace + "\n" +
-            "safe action: from the owning workspace, run playwright-cli -s=" +
-              browser.name + " " + action + "\n"
+            "safe action: " + action + " it through the tool that owns it\n"
           );
         }
         process.stdout.write("global close-all: blocked by this skill\n");
@@ -1673,6 +1793,34 @@ safety_audit() {
     echo "6. persistent process token: ACTION REQUIRED (restart Chrome and rotate token)"
   fi
   echo "7. attach process continuity: ENFORCED (complete Chrome PID set must remain unchanged)"
+}
+
+print_help() {
+  /bin/cat <<USAGE
+Usage: playwright-my-chrome.sh <command> [arguments]
+
+Wrapper commands:
+  setup                   install the skill's private Playwright CLI
+  doctor, status          report readiness without reading the token
+  connect                 attach to the running Chrome (needs user approval)
+  ensure                  check the owned session without attaching
+  disconnect              detach the session; Chrome keeps running
+  cleanup-plan            list Playwright sessions and their safe cleanup
+  safety-audit            list the enforced safeguards
+  begin-token-rotation, mark-token-regenerated, rotation-status
+                          rotate an exposed extension token
+
+Blocked: open, attach, show, install, install-browser, delete-data,
+close-all, kill-all.
+
+Other commands go to the private Playwright CLI in session '$session_name'.
+USAGE
+  if [[ -n "$(supported_cli_fault)" ]]; then
+    echo "Playwright CLI commands are listed here after: $setup_command"
+    return 0
+  fi
+  echo
+  run_cli "${forward_args[@]:---help}"
 }
 
 record_explicit_session() {
@@ -1760,14 +1908,21 @@ if [[ -n "$explicit_session" && "$explicit_session" != "$session_name" ]]; then
   die "This wrapper only controls session '$session_name', not '$explicit_session'."
 fi
 
-if (( help_requested == 1 || version_requested == 1 )); then
+if (( version_requested == 1 )); then
+  require_usable_cli "$(supported_cli_fault)"
   run_cli "${forward_args[@]}"
+  exit $?
+fi
+if (( help_requested == 1 )) || [[ -z "$command_name" ]]; then
+  print_help
   exit $?
 fi
 
 case "$command_name" in
-  "")
-    run_cli --help
+  setup)
+    wrapper_command_has_extras &&
+      die "'setup' does not accept browser-command arguments."
+    setup_private_cli
     ;;
   doctor|status)
     wrapper_command_has_extras &&
@@ -1797,19 +1952,19 @@ case "$command_name" in
   cleanup-plan)
     wrapper_command_has_extras &&
       die "'cleanup-plan' does not accept browser-command arguments."
-    require_supported_cli
+    require_usable_cli "$(supported_cli_fault)"
     cleanup_plan
     ;;
   ensure)
     wrapper_command_has_extras &&
       die "'ensure' does not accept browser-command arguments."
-    require_supported_cli
+    require_usable_cli "$(supported_cli_fault)"
     ensure_session false false
     ;;
   connect)
     wrapper_command_has_extras &&
       die "'connect' does not accept browser-command arguments."
-    require_supported_cli
+    require_usable_cli "$(supported_cli_fault)"
     ensure_session false true
     ;;
   attach)
@@ -1818,7 +1973,9 @@ case "$command_name" in
   disconnect|detach|close)
     wrapper_command_has_extras &&
       die "'$command_name' does not accept browser-command arguments."
-    require_supported_cli
+    # An intact copy from another skill release can still end the session, so
+    # setup can replace that copy afterwards.
+    require_usable_cli "$(intact_cli_fault "$private_cli_dir")"
     disconnect_session
     ;;
   open)
@@ -1828,11 +1985,11 @@ case "$command_name" in
     die "'$command_name' is outside this wrapper's safe scope."
     ;;
   list)
-    require_supported_cli
+    require_usable_cli "$(supported_cli_fault)"
     run_cli "${forward_args[@]}"
     ;;
   *)
-    require_supported_cli
+    require_usable_cli "$(supported_cli_fault)"
     ensure_session true false
     run_cli_redacted -s="$session_name" "${forward_args[@]}"
     ;;

@@ -5,10 +5,20 @@ before it merges.
 
 ## Development
 
-This project has no runtime dependency installer, on purpose. Install
-`@playwright/cli` separately, and keep its supported version the same in the
-wrapper, the skill instructions, the README, the tests, and CI. Those five
-places drift apart as soon as one of them is updated alone.
+The skill pins its Playwright CLI in
+`skills/playwright-my-chrome/cli/package-lock.json`, and the wrapper's `setup`
+command installs a private copy from it. That lockfile is the only place the
+version lives. To move to a new release, change the version in
+`skills/playwright-my-chrome/cli/package.json` and regenerate the lock:
+
+```bash
+npm install --package-lock-only --ignore-scripts \
+  --prefix skills/playwright-my-chrome/cli
+```
+
+Audit the new release against the CLI behavior the wrapper depends on before
+the change merges. `tests/validate_skill.py` fails if any other file spells the
+version.
 
 Run all checks on macOS:
 
@@ -35,8 +45,9 @@ npx skills install . --skill playwright-my-chrome --global \
   --agent codex --agent claude-code
 ```
 
-Then run the wrapper from the installed path, not from this repository, so the
-check covers what a user actually gets.
+Then run the installed wrapper's `setup`, and use the wrapper from the
+installed path, not from this repository, so the check covers what a user
+actually gets.
 
 ## Pull requests
 

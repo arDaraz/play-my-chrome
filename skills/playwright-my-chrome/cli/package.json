@@ -1,0 +1,9 @@
+{
+  "name": "playwright-my-chrome-cli",
+  "private": true,
+  "description": "The Playwright CLI version this skill installs privately with its setup command",
+  "license": "MIT",
+  "dependencies": {
+    "@playwright/cli": "0.1.21"
+  }
+}
