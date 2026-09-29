@@ -29,7 +29,6 @@ cli_manifest="$skill_dir/cli/package.json"
 cli_lock="$skill_dir/cli/package-lock.json"
 private_cli_dir="$runtime_dir/cli"
 private_cli_entry="$private_cli_dir/node_modules/@playwright/cli/playwright-cli.js"
-setup_command="\"$skill_dir/scripts/playwright-my-chrome.sh\" setup"
 setup_staging_dir=""
 displaced_cli_dir=""
 npm_bin=""
@@ -53,6 +52,25 @@ die() {
   echo "ERROR: $*" >&2
   exit 1
 }
+
+# Prints a command that a person or an agent can paste into any POSIX shell.
+shell_command() {
+  printf '%q' "$1"
+  shift
+  if (( $# > 0 )); then
+    printf ' %q' "$@"
+  fi
+}
+
+wrapper_command() {
+  shell_command "$skill_dir/scripts/playwright-my-chrome.sh" "$@"
+}
+
+token_command() {
+  shell_command "$skill_dir/scripts/store-extension-token.sh" "$@"
+}
+
+setup_command="$(wrapper_command setup)"
 
 private_dir_is_valid() {
   [[ -d "$1" && ! -L "$1" && -O "$1" ]] || return 1
@@ -248,7 +266,8 @@ fi
 if [[ -e "$private_cli_dir" || -L "$private_cli_dir" ]] &&
   ! private_dir_is_valid "$private_cli_dir"; then
   echo "SECURITY: The private Playwright CLI must be a directory you own with mode 0700, not a symbolic link: $private_cli_dir" >&2
-  echo "Inspect and remove it, then run setup. No browser command was attempted." >&2
+  echo "Inspect and remove it, then run: $setup_command" >&2
+  echo "No browser command was attempted." >&2
   exit 6
 fi
 
@@ -381,9 +400,13 @@ require_usable_cli() {
 }
 
 remove_setup_staging() {
-  if [[ -n "$displaced_cli_dir" && -e "$displaced_cli_dir" && ! -e "$private_cli_dir" ]]; then
-    "$mv_bin" "$displaced_cli_dir" "$private_cli_dir" ||
-      echo "Could not restore the previous private Playwright CLI." >&2
+  if [[ -n "$displaced_cli_dir" && -e "$displaced_cli_dir" && ! -e "$private_cli_dir" ]] &&
+    ! "$mv_bin" "$displaced_cli_dir" "$private_cli_dir"; then
+    echo "Could not restore the previous private Playwright CLI. It is kept at: $displaced_cli_dir" >&2
+    echo "Move it back to $private_cli_dir by hand. The next setup deletes it and installs a fresh copy." >&2
+    displaced_cli_dir=""
+    setup_staging_dir=""
+    return 0
   fi
   displaced_cli_dir=""
   if [[ -n "$setup_staging_dir" ]]; then
@@ -460,25 +483,34 @@ private_cli_process_pids() {
       '
 }
 
-# Disconnect needs a working copy. When a damaged copy cannot report its
-# session, setup refuses only while a process runs from it.
+# A copy that fails the intact check never runs. Setup refuses only while a
+# process runs from it, so disconnect cannot deadlock.
 require_detached_session() {
-  local attachment=""
+  local attachment="unknown"
   local pids=""
 
-  attachment="$(owned_session_attachment)"
+  if [[ -z "$(intact_cli_fault "$private_cli_dir")" ]]; then
+    attachment="$(owned_session_attachment)"
+  fi
   if [[ "$attachment" == "detached" ]]; then
     return 0
   fi
   if [[ "$attachment" == "attached" ]]; then
     echo "Session '$session_name' is attached through the current private Playwright CLI." >&2
-    echo "Run 'disconnect' first, then run setup again. Setup never detaches on its own." >&2
+    echo "Setup never detaches on its own. Run this first, then run setup again:" >&2
+    echo "  $(wrapper_command disconnect)" >&2
     return 1
   fi
-  pids="$(private_cli_process_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  if ! pids="$(private_cli_process_pids)"; then
+    echo "Could not inspect the process list for processes running from the private CLI." >&2
+    echo "No private Playwright CLI was replaced." >&2
+    return 1
+  fi
   [[ -z "$pids" ]] && return 0
+  pids="$(printf '%s\n' "$pids" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   echo "The private CLI cannot report session '$session_name', and a Playwright daemon from the private CLI is still running (pid $pids)." >&2
-  echo "Ask the user before stopping that process, then run setup again. Setup never stops it on its own." >&2
+  echo "Setup never stops that process on its own. Ask the user before stopping it, then run:" >&2
+  echo "  $setup_command" >&2
   return 1
 }
 
@@ -685,9 +717,9 @@ read_token() {
     echo "Playwright Extension token is missing or malformed in macOS Keychain." >&2
     echo "No browser connection was attempted." >&2
     echo "If it carries a copied PLAYWRIGHT_MCP_EXTENSION_TOKEN= prefix, repair it in place:" >&2
-    echo "  $skill_dir/scripts/store-extension-token.sh --migrate-from-service $keychain_service" >&2
+    echo "  $(token_command --migrate-from-service "$keychain_service")" >&2
     echo "Otherwise regenerate and copy it in the extension, then run:" >&2
-    echo "  $skill_dir/scripts/store-extension-token.sh" >&2
+    echo "  $(token_command)" >&2
     return 1
   fi
 
@@ -823,7 +855,8 @@ begin_token_rotation() {
   unset digest
   remove_private_state_file "$token_rotation_chrome_pid_file" || return 1
   echo "Token-rotation baseline recorded privately."
-  echo "Regenerate and copy the extension token, then run store-extension-token.sh."
+  echo "Regenerate and copy the extension token, then run:"
+  echo "  $(token_command)"
 }
 
 mark_token_regenerated() {
@@ -944,13 +977,15 @@ require_running_normal_chrome() {
   if (( count > 1 )); then
     echo "Multiple normal Google Chrome main processes are running." >&2
     echo "No extension connection was attempted because browser ownership is ambiguous." >&2
-    echo "Fully quit the extra Chrome instances, then run 'connect' again." >&2
+    echo "Fully quit the extra Chrome instances, then run this again:" >&2
+    echo "  $(wrapper_command connect)" >&2
     return 5
   fi
 
   echo "Normal user Chrome is not already running." >&2
   echo "No browser was launched and no extension connection was attempted." >&2
-  echo "Open Google Chrome manually in the signed-in profile, then run 'connect' again." >&2
+  echo "Open Google Chrome manually in the signed-in profile, then run this again:" >&2
+  echo "  $(wrapper_command connect)" >&2
   return 5
 }
 
@@ -1709,7 +1744,8 @@ ensure_session() {
     ready)
       if ! tabs="$(list_tabs)"; then
         echo "The Chrome session could not be probed after three attempts." >&2
-        echo "No reconnect was attempted; run 'doctor' and retry." >&2
+        echo "No reconnect was attempted. Run this, then retry:" >&2
+      echo "  $(wrapper_command doctor)" >&2
         release_lock
         return 1
       fi
@@ -1725,7 +1761,7 @@ ensure_session() {
         echo "No Playwright My Chrome session is currently owned by this skill." >&2
         echo "No attachment was attempted, so another extension client remains untouched." >&2
         echo "After explicit approval to take the exclusive Playwright Extension connection, run:" >&2
-        echo "  $skill_dir/scripts/playwright-my-chrome.sh connect" >&2
+        echo "  $(wrapper_command connect)" >&2
         release_lock
         return 4
       fi
@@ -1742,7 +1778,7 @@ ensure_session() {
         echo "The owned Playwright My Chrome session is stale." >&2
         echo "No replacement was attempted, so another extension client remains untouched." >&2
         echo "After explicit approval to take the exclusive Playwright Extension connection, run:" >&2
-        echo "  $skill_dir/scripts/playwright-my-chrome.sh connect" >&2
+        echo "  $(wrapper_command connect)" >&2
         release_lock
         return 4
       fi
@@ -1756,7 +1792,8 @@ ensure_session() {
       ;;
     unavailable)
       echo "Playwright session state remained unavailable after three attempts." >&2
-      echo "No reconnect was attempted; run 'doctor' and retry." >&2
+      echo "No reconnect was attempted. Run this, then retry:" >&2
+      echo "  $(wrapper_command doctor)" >&2
       release_lock
       return 1
       ;;

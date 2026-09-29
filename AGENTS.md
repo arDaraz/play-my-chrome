@@ -73,13 +73,14 @@ library. Reading it top to bottom gives the whole design:
 5. **Setup** (`setup_private_cli`) installs that private copy. Under the
    wrapper lock it removes abandoned `.cli-setup.*` directories and refuses
    while `mychrome` reports `attached: true`, whatever its `compatible` value.
-   When the copy cannot run `--json list`, setup refuses only if a process
-   still runs code from `<runtime>/cli`. It runs `npm ci --ignore-scripts` on the
+   A copy that fails the intact check never runs. Setup then refuses if a
+   process runs code from `<runtime>/cli`, or if `ps` fails. It runs `npm ci --ignore-scripts` on the
    shipped lock in a private staging directory, with the npm next to the
    resolved Node, as a tracked child with a 10 minute bound. It checks the
    staged copy, then moves it into `<runtime>/cli`. A failed, timed-out, or
    interrupted setup kills npm and removes the staging directory. If the old
-   copy was already moved aside, the cleanup moves it back. A copy is
+   copy was already moved aside, the cleanup moves it back. If that move
+   fails, the cleanup keeps the staging directory and prints its path. A copy is
    supported (`supported_cli_fault`) when its lock is byte-identical to the
    shipped lock, every locked package is installed at its locked version, and
    `--version` matches. `ensure_session` checks this again after it takes the

@@ -11,4 +11,9 @@ if [[ -n "${MOCK_MV_HANG_TARGET:-}" && "${!#}" == "$MOCK_MV_HANG_TARGET" &&
     :
   done
 fi
+# With MOCK_MV_FAIL_RESTORE set, a later move into that path fails, so a test
+# can make the rollback fail.
+if [[ -n "${MOCK_MV_FAIL_RESTORE:-}" && "${!#}" == "${MOCK_MV_HANG_TARGET:-}" ]]; then
+  exit 1
+fi
 exec /bin/mv "$@"

@@ -385,17 +385,45 @@ and `setup` failed on every fresh install. The mock `ps` returns a fixed file,
 so the tests missed it. The paths now reach `awk` through the environment. A
 line counts only when a node executable runs a script from the copy. One test
 feeds `awk`, `grep`, and `cat` lines that hold the path, and expects setup to
-go ahead. Another test runs the real `/bin/ps` against a stand-in node process
-started from the copy.
+go ahead.
+
+### Fixes from the second Codex review
+
+A new test reproduced each of the first four findings, and each failed before
+its fix:
+
+- A failed `ps` left the process list empty, and setup read that as proof of no
+  daemon. Setup now checks the status of the inspection and refuses when `ps`
+  fails.
+- Setup ran `--json list` on a copy that had failed the intact check. It now
+  asks the session only through an intact copy, and otherwise goes straight to
+  the process check. The test deletes a locked package and expects the only
+  CLI run during setup to be the staged copy's `--version`.
+- A failed rollback move still deleted the staging directory, which held the
+  only usable copy. The cleanup now keeps that directory and prints where the
+  previous copy is.
+- The token repair command printed the Keychain service unquoted. It now
+  prints the script path and the service with `printf %q`.
+- The real `/bin/ps` test broke the rule that tests never touch the real
+  world, and was removed. The mock `ps` fixture now covers what it caught: a
+  node process from the copy by logical and by physical path, and lines from
+  `awk`, `grep`, `cat`, and a `bash -c` pipeline that hold the copy path.
+
+A later test pass found that the regenerate hint and the `connect` hint
+printed the skill path unquoted, so a path with a space broke the pasted
+command. Every command the wrapper prints for a person or an agent now goes
+through one `shell_command` helper that escapes each word with `printf %q`.
+This covers the `setup`, `connect`, `disconnect`, `doctor`, token repair, and
+token regenerate hints. A test copies the skill to a path with spaces and runs
+each reachable printed command through `zsh` exactly as printed.
 
 ### Verification
 
-- `npm run verify`: ShellCheck, project validation, and 44 behavior tests
+- `npm run verify`: ShellCheck, project validation, and 48 behavior tests
   passed.
-- A throwaway `HOME` install with the real process list and real npm: `setup`
-  installed 0.1.21, a second `setup` reported it already installed, `doctor`
-  reported supported, and `setup` on a copy with `playwright-core` deleted
-  reinstalled it.
+- A throwaway `HOME` install with the real process list and real npm, run by
+  hand after each process-check change: `setup` installed 0.1.21, a second
+  `setup` reported it already installed, and `doctor` reported supported.
 - Mutation checks for this round: ignoring `compatible` in the attached check,
   skipping the process check, removing the check under the lock, removing the
   restore, and removing the nvm version filter each made a test fail.

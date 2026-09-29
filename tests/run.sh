@@ -109,6 +109,7 @@ setup_case() {
   export MOCK_TAB_LIST_MODE="stable"
   export MOCK_CHANGE_PID_ON_LIST_ALL="0"
   unset MOCK_CLI_VERSION MOCK_SESSION_COMPATIBLE MOCK_MV_HANG_TARGET \
+    MOCK_MV_FAIL_RESTORE MOCK_PS_MODE \
     PLAYWRIGHT_MY_CHROME_TEST_ATTACH_TIMEOUT_ATTEMPTS \
     PLAYWRIGHT_MY_CHROME_TEST_SETUP_TIMEOUT_ATTEMPTS
 
@@ -136,8 +137,9 @@ remove_private_cli() {
 
 copy_skill_with_locked_version() {
   local version="$1"
+  local destination="${2:-$case_dir/skill}"
 
-  /bin/cp -R "$repo_root/skills/playwright-my-chrome" "$case_dir/skill"
+  /bin/cp -R "$repo_root/skills/playwright-my-chrome" "$destination"
   node -e '
     const fs = require("fs");
     const [manifestPath, lockPath, version] = process.argv.slice(1);
@@ -148,7 +150,7 @@ copy_skill_with_locked_version() {
     lock.packages["node_modules/@playwright/cli"].version = version;
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
     fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
-  ' "$case_dir/skill/cli/package.json" "$case_dir/skill/cli/package-lock.json" "$version"
+  ' "$destination/cli/package.json" "$destination/cli/package-lock.json" "$version"
 }
 
 assert_process_gone() {
@@ -427,7 +429,7 @@ test_unsupported_cli_version_blocks_browser_commands() {
   run_capture "$wrapper" connect
   assert_status 2
   assert_contains "$output" "requires @playwright/cli $locked_cli_version"
-  assert_contains "$output" "\"$wrapper\" setup"
+  assert_contains "$output" "$(printf '%q setup' "$wrapper")"
   assert_file_not_contains "$MOCK_CLI_LOG" "--json attach"
   [[ ! -s "$MOCK_SECURITY_LOG" ]] ||
     fail "unsupported CLI path read the Keychain token"
@@ -640,7 +642,7 @@ test_missing_private_cli_refuses_before_browser_access() {
   run_capture "$wrapper" connect
   assert_status 2
   assert_contains "$output" "private Playwright CLI is not installed"
-  assert_contains "$output" "\"$wrapper\" setup"
+  assert_contains "$output" "$(printf '%q setup' "$wrapper")"
   [[ ! -s "$MOCK_CLI_LOG" ]] ||
     fail "missing private CLI path reached a Playwright CLI"
   [[ ! -s "$MOCK_SECURITY_LOG" ]] ||
@@ -660,7 +662,7 @@ test_new_lock_version_requires_setup_and_replaces_copy() {
   assert_status 2
   assert_contains "$output" "was installed from another skill release's lockfile"
   assert_contains "$output" "requires @playwright/cli 0.1.999"
-  assert_contains "$output" "\"$case_dir/skill/scripts/playwright-my-chrome.sh\" setup"
+  assert_contains "$output" "$(printf '%q setup' "$case_dir/skill/scripts/playwright-my-chrome.sh")"
   assert_file_not_contains "$MOCK_CLI_LOG" "--json attach"
   [[ ! -s "$MOCK_SECURITY_LOG" ]] ||
     fail "version mismatch path read the Keychain token"
@@ -878,7 +880,7 @@ test_setup_refuses_while_session_is_attached() {
   printf '%s\n' "ready" >"$MOCK_SESSION_STATE_FILE"
   run_capture "$copied_wrapper" setup
   assert_status 1
-  assert_contains "$output" "Run 'disconnect' first"
+  assert_contains "$output" "Setup never detaches on its own"
   [[ ! -s "$MOCK_NPM_LOG" ]] || fail "setup ran npm while the session was attached"
   assert_file_not_contains "$MOCK_CLI_LOG" "detach"
 
@@ -916,7 +918,7 @@ test_version_prints_only_the_private_cli_version() {
   for flag in --version -v; do
     run_capture "$wrapper" "$flag"
     assert_status 2
-    assert_contains "$output" "\"$wrapper\" setup"
+    assert_contains "$output" "$(printf '%q setup' "$wrapper")"
     assert_not_contains "$output" "Wrapper commands:"
   done
   [[ ! -s "$MOCK_CLI_LOG" ]] || fail "--version ran a missing private CLI"
@@ -960,7 +962,7 @@ test_setup_refuses_attached_incompatible_session() {
   export MOCK_SESSION_COMPATIBLE="false"
   run_capture "$case_dir/skill/scripts/playwright-my-chrome.sh" setup
   assert_status 1
-  assert_contains "$output" "Run 'disconnect' first"
+  assert_contains "$output" "Setup never detaches on its own"
   [[ ! -s "$MOCK_NPM_LOG" ]] || fail "setup ran npm under an attached, incompatible session"
   pass_test "setup refuses a session that is attached but reported incompatible"
 }
@@ -979,12 +981,19 @@ test_setup_with_unreadable_session_checks_for_a_live_daemon() {
   run_capture "$case_dir/skill/scripts/playwright-my-chrome.sh" setup
   assert_status 1
   assert_contains "$output" "daemon from the private CLI is still running (pid 4242)"
+  printf '4343 node %s/cli/node_modules/standin.js\n' "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR" \
+    >"$MOCK_PS_OUTPUT_FILE"
+  run_capture "$case_dir/skill/scripts/playwright-my-chrome.sh" setup
+  assert_status 1
+  assert_contains "$output" "(pid 4343)"
   [[ ! -s "$MOCK_NPM_LOG" ]] || fail "setup replaced a CLI that a live daemon runs from"
 
   printf '%s\n' \
     "5555 /usr/bin/awk -v logical=$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/node_modules/ {print}" \
     "5556 /usr/bin/grep -F $physical_runtime/cli/node_modules/" \
     "5557 /bin/cat $daemon_path" \
+    "5558 /bin/bash -c ps -axo pid=,command= | awk -v physical=$physical_runtime/cli/node_modules/" \
+    "5559 /usr/bin/awk PRIVATE_CLI_LOGICAL=$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/node_modules/" \
     >"$MOCK_PS_OUTPUT_FILE"
   run_capture "$case_dir/skill/scripts/playwright-my-chrome.sh" setup
   assert_status 0
@@ -1082,27 +1091,130 @@ SCRIPT
   pass_test "node resolution skips a Node.js below the engines minimum"
 }
 
-test_setup_checks_the_real_process_list_for_private_cli_processes() {
-  local standin_pid=""
-  local standin_script=""
-
+test_setup_fails_closed_when_the_process_list_fails() {
   setup_case
+  copy_skill_with_locked_version "0.1.999"
   /usr/bin/find "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/node_modules/@playwright/cli" -depth -delete
-  export PLAYWRIGHT_MY_CHROME_TEST_PS_BIN="/bin/ps"
-  standin_script="$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/node_modules/standin-daemon.js"
-  printf '%s\n' 'setInterval(() => {}, 1000);' >"$standin_script"
-  "$PLAYWRIGHT_MY_CHROME_NODE" "$standin_script" &
-  standin_pid=$!
-  run_capture "$wrapper" setup
-  kill "$standin_pid"
-  wait "$standin_pid" 2>/dev/null || true
+  export MOCK_PS_MODE="fail"
+  run_capture "$case_dir/skill/scripts/playwright-my-chrome.sh" setup
   assert_status 1
-  assert_contains "$output" "still running (pid $standin_pid)"
+  assert_contains "$output" "Could not inspect the process list"
+  [[ ! -s "$MOCK_NPM_LOG" ]] || fail "setup treated a failed process list as proof of no daemon"
+  pass_test "setup fails closed when it cannot inspect the process list"
+}
 
+test_setup_never_runs_a_rejected_copy() {
+  setup_case
+  /usr/bin/find "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/node_modules/playwright" -depth -delete
   run_capture "$wrapper" setup
   assert_status 0
-  assert_contains "$output" "Installed @playwright/cli $locked_cli_version"
-  pass_test "the real process list finds a node process from the copy and never the check itself"
+  [[ "$(<"$MOCK_CLI_LOG")" == "--version" ]] ||
+    fail "setup ran more than the staged copy's --version: $(<"$MOCK_CLI_LOG")"
+  pass_test "setup runs no code from a copy that failed the intact check"
+}
+
+test_failed_rollback_keeps_the_previous_copy() {
+  local output_file=""
+  local wrapper_pid=""
+
+  setup_case
+  copy_skill_with_locked_version "0.1.999"
+  output_file="$case_dir/setup.out"
+  export MOCK_MV_HANG_TARGET="$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli"
+  export MOCK_MV_FAIL_RESTORE=1
+  "$case_dir/skill/scripts/playwright-my-chrome.sh" setup >"$output_file" 2>&1 &
+  wrapper_pid=$!
+  wait_for_file "$MOCK_MV_PID_FILE" "$wrapper_pid"
+  kill -TERM "$wrapper_pid"
+  kill -TERM "$(<"$MOCK_MV_PID_FILE")"
+  set +e
+  wait "$wrapper_pid"
+  status=$?
+  set -e
+  output="$(<"$output_file")"
+  assert_status 143
+  assert_contains "$output" "Could not restore the previous private Playwright CLI. It is kept at"
+  [[ -n "$(/usr/bin/find "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR" -path '*/.cli-setup.*/previous/node_modules/@playwright/cli/playwright-cli.js' -print -quit)" ]] ||
+    fail "cleanup deleted the only usable copy after a failed rollback"
+  pass_test "a failed rollback keeps the staging directory and the previous copy"
+}
+
+test_token_repair_command_quotes_the_service() {
+  setup_case
+  set_normal_chrome 111
+  export PLAYWRIGHT_MY_CHROME_KEYCHAIN_SERVICE="my token service"
+  printf '%s\n' "PLAYWRIGHT_MCP_EXTENSION_TOKEN=TEST_ONLY_TOKEN_abcdefghijklmnopqrstuvwxyz123456" \
+    >"$MOCK_KEYCHAIN_TOKEN_FILE"
+  run_capture "$wrapper" connect
+  unset PLAYWRIGHT_MY_CHROME_KEYCHAIN_SERVICE
+  assert_status 3
+  assert_contains "$output" '--migrate-from-service my\ token\ service'
+  pass_test "the token repair command shell-escapes the Keychain service"
+}
+
+printed_command() {
+  printf '%s\n' "$output" | /usr/bin/sed -n 's/^  //p' | /usr/bin/sed -n "${1}p"
+}
+
+run_printed_in_zsh() {
+  run_capture /bin/zsh -f -c "$1"
+}
+
+test_printed_commands_work_from_a_path_with_spaces() {
+  local spaced_skill=""
+  local spaced_wrapper=""
+
+  setup_case
+  spaced_skill="$case_dir/skill dir/playwright my chrome"
+  /bin/mkdir -p "${spaced_skill%/*}"
+  /bin/cp -R "$repo_root/skills/playwright-my-chrome" "$spaced_skill"
+  spaced_wrapper="$spaced_skill/scripts/playwright-my-chrome.sh"
+  export PLAYWRIGHT_MY_CHROME_KEYCHAIN_SERVICE="my token service"
+  remove_private_cli
+
+  run_capture "$spaced_wrapper" connect
+  assert_status 2
+  run_printed_in_zsh "$(printed_command 1)"
+  assert_status 0
+  assert_contains "$output" "Installed @playwright/cli"
+
+  run_capture "$spaced_wrapper" connect
+  assert_status 5
+  run_printed_in_zsh "$(printed_command 1)"
+  assert_status 5
+  assert_contains "$output" "Normal user Chrome is not already running"
+
+  set_normal_chrome 111
+  printf '%s\n' "PLAYWRIGHT_MCP_EXTENSION_TOKEN=TEST_ONLY_TOKEN_abcdefghijklmnopqrstuvwxyz123456" \
+    >"$MOCK_KEYCHAIN_TOKEN_FILE"
+  run_capture "$spaced_wrapper" connect
+  assert_status 3
+  run_printed_in_zsh "$(printed_command 1)"
+  assert_status 0
+  assert_contains "$output" "copied to the configured Keychain service"
+
+  printf '%s\n' "TEST_ONLY_bad" >"$MOCK_KEYCHAIN_TOKEN_FILE"
+  run_capture "$spaced_wrapper" connect
+  assert_status 3
+  printf '%s\n' "TEST_ONLY_TOKEN_abcdefghijklmnopqrstuvwxyz123456" >"$MOCK_CLIPBOARD_FILE"
+  run_printed_in_zsh "$(printed_command 2)"
+  assert_status 0
+  assert_contains "$output" "stored in macOS Keychain; clipboard cleared"
+
+  run_capture "$spaced_wrapper" ensure
+  assert_status 4
+  run_printed_in_zsh "$(printed_command 1)"
+  assert_status 0
+  assert_contains "$output" "ready (attached session 'mychrome')"
+
+  copy_skill_with_locked_version "0.1.999" "$case_dir/other skill"
+  run_capture "$case_dir/other skill/scripts/playwright-my-chrome.sh" setup
+  assert_status 1
+  run_printed_in_zsh "$(printed_command 1)"
+  unset PLAYWRIGHT_MY_CHROME_KEYCHAIN_SERVICE
+  assert_status 0
+  assert_contains "$output" "Detached Playwright session 'mychrome'"
+  pass_test "every printed command runs through zsh from a path with spaces"
 }
 
 test_missing_chrome_refuses_before_token_read
@@ -1145,7 +1257,11 @@ test_version_prints_only_the_private_cli_version
 test_malformed_stored_token_is_refused_before_attach
 test_setup_refuses_attached_incompatible_session
 test_setup_with_unreadable_session_checks_for_a_live_daemon
-test_setup_checks_the_real_process_list_for_private_cli_processes
+test_setup_fails_closed_when_the_process_list_fails
+test_setup_never_runs_a_rejected_copy
+test_failed_rollback_keeps_the_previous_copy
+test_token_repair_command_quotes_the_service
+test_printed_commands_work_from_a_path_with_spaces
 test_connect_rechecks_the_cli_under_the_lock
 test_interrupted_swap_restores_the_previous_cli
 test_node_resolution_skips_versions_below_the_minimum

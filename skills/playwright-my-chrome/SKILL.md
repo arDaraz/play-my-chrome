@@ -138,9 +138,10 @@ reinstall, delete `<runtime>/cli` and run `setup`.
 `setup` refuses while the `mychrome` session is attached, because it replaces
 the CLI that session runs from. When that happens, run `disconnect`, then
 `setup`, and ask for approval again before `connect`. `disconnect` still works
-with an intact copy from an earlier skill release. If the copy is too damaged
-to report the session and a process still runs from it, `setup` names that
-process ID. Report it to the user, and never stop that process yourself.
+with an intact copy from an earlier skill release. If the copy is damaged and a
+process still runs from it, `setup` names that process ID. It also refuses
+when it cannot read the process list. Report either case to the user, and
+never stop that process yourself.
 
 A `SECURITY:` message about `<runtime>/cli` with exit status 6 means that
 directory is a symbolic link, belongs to another user, or does not have mode
