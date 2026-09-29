@@ -23,8 +23,8 @@ if [[ "$arguments" == *" --json list "* ]]; then
   fi
 
   if [[ -f "$state_file" ]] && [[ "$(<"$state_file")" == "ready" ]]; then
-    printf '{"browsers":[{"name":"mychrome","status":"open","attached":true,"compatible":true,"browserType":"chrome","workspace":"%s"}]}\n' \
-      "$runtime_dir"
+    printf '{"browsers":[{"name":"mychrome","status":"open","attached":true,"compatible":%s,"browserType":"chrome","workspace":"%s"}]}\n' \
+      "${MOCK_SESSION_COMPATIBLE:-true}" "$runtime_dir"
   else
     printf '{"browsers":[]}\n'
   fi

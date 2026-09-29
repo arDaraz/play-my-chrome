@@ -11,6 +11,7 @@ security_bin="/usr/bin/security"
 extension_connect_url="chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/connect.html"
 chrome_executable="${PLAYWRIGHT_MY_CHROME_EXECUTABLE:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 ps_bin="/bin/ps"
+mv_bin="/bin/mv"
 attach_timeout_attempts=600
 setup_timeout_attempts=6000
 default_runtime_dir="$HOME/Library/Caches/playwright-my-chrome"
@@ -30,6 +31,7 @@ private_cli_dir="$runtime_dir/cli"
 private_cli_entry="$private_cli_dir/node_modules/@playwright/cli/playwright-cli.js"
 setup_command="\"$skill_dir/scripts/playwright-my-chrome.sh\" setup"
 setup_staging_dir=""
+displaced_cli_dir=""
 npm_bin=""
 lock_held=0
 bounded_child_pid=""
@@ -39,6 +41,7 @@ listed_tabs=""
 if [[ "$test_mode" == "1" ]]; then
   security_bin="${PLAYWRIGHT_MY_CHROME_TEST_SECURITY_BIN:-$security_bin}"
   ps_bin="${PLAYWRIGHT_MY_CHROME_TEST_PS_BIN:-$ps_bin}"
+  mv_bin="${PLAYWRIGHT_MY_CHROME_TEST_MV_BIN:-$mv_bin}"
   attach_timeout_attempts="${PLAYWRIGHT_MY_CHROME_TEST_ATTACH_TIMEOUT_ATTEMPTS:-$attach_timeout_attempts}"
   npm_bin="${PLAYWRIGHT_MY_CHROME_TEST_NPM_BIN:-}"
   setup_timeout_attempts="${PLAYWRIGHT_MY_CHROME_TEST_SETUP_TIMEOUT_ATTEMPTS:-$setup_timeout_attempts}"
@@ -77,45 +80,101 @@ if [[ "$test_mode" != "1" && ! -x "$chrome_executable" ]]; then
 fi
 [[ "$ps_bin" == /* && -x "$ps_bin" ]] ||
   die "The configured process-list executable is unavailable."
+[[ "$mv_bin" == /* && -x "$mv_bin" ]] ||
+  die "The configured move executable is unavailable."
 
-resolve_node() {
-  local best=""
-  local candidate=""
+if [[ "$(<"$cli_manifest")" =~ \"node\":[[:space:]]*\"\>=([0-9]+\.[0-9]+\.[0-9]+)\" ]]; then
+  minimum_node_version="${BASH_REMATCH[1]}"
+else
+  echo "ERROR: The skill's cli/package.json is missing or has no Node.js engines minimum: $cli_manifest" >&2
+  echo "Reinstall the skill. No browser command was attempted." >&2
+  exit 2
+fi
 
-  if [[ -n "${PLAYWRIGHT_MY_CHROME_NODE:-}" ]]; then
-    candidate="$PLAYWRIGHT_MY_CHROME_NODE"
-    [[ "$candidate" == /* && -x "$candidate" ]] || return 1
-    printf '%s\n' "$candidate"
-    return 0
+version_at_least() {
+  local have_major=""
+  local have_minor=""
+  local have_patch=""
+  local need_major=""
+  local need_minor=""
+  local need_patch=""
+
+  [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  IFS=. read -r have_major have_minor have_patch <<<"$1"
+  IFS=. read -r need_major need_minor need_patch <<<"$2"
+  if (( have_major != need_major )); then
+    (( have_major > need_major ))
+  elif (( have_minor != need_minor )); then
+    (( have_minor > need_minor ))
+  else
+    (( have_patch >= need_patch ))
   fi
+}
+
+node_version_of() {
+  "$1" -p 'process.versions.node' 2>/dev/null || true
+}
+
+configured_node() {
+  local candidate="$PLAYWRIGHT_MY_CHROME_NODE"
+  local version=""
+
+  if [[ "$candidate" != /* || ! -x "$candidate" ]]; then
+    echo "ERROR: PLAYWRIGHT_MY_CHROME_NODE must be an absolute path to Node.js: $candidate" >&2
+    return 1
+  fi
+  version="$(node_version_of "$candidate")"
+  if ! version_at_least "$version" "$minimum_node_version"; then
+    echo "ERROR: Node.js ${version:-unknown} is older than the required $minimum_node_version: $candidate" >&2
+    return 1
+  fi
+  printf '%s\n' "$candidate"
+}
+
+# nvm names each install after its version, so this function skips old
+# versions without running them.
+newest_qualifying_nvm_node() {
+  local candidate=""
+  local newest=""
+  local version=""
 
   shopt -s nullglob
-  for candidate in "$HOME"/.nvm/versions/node/*/bin/node; do
-    if [[ -z "$best" || "$candidate" -nt "$best" ]]; then
-      best="$candidate"
+  for candidate in "$HOME"/.nvm/versions/node/v*/bin/node; do
+    version="${candidate%/bin/node}"
+    version_at_least "${version##*/v}" "$minimum_node_version" || continue
+    if [[ -z "$newest" || "$candidate" -nt "$newest" ]]; then
+      newest="$candidate"
     fi
   done
   shopt -u nullglob
+  printf '%s' "$newest"
+}
 
-  if [[ -n "$best" ]]; then
-    printf '%s\n' "$best"
-    return 0
+resolve_node() {
+  local candidate=""
+  local candidates=()
+  local newest_nvm_node=""
+
+  if [[ -n "${PLAYWRIGHT_MY_CHROME_NODE:-}" ]]; then
+    configured_node
+    return
   fi
 
-  for candidate in \
-    "$HOME/.volta/bin/node" \
-    /opt/homebrew/bin/node \
-    /usr/local/bin/node; do
-    if [[ -x "$candidate" ]]; then
+  newest_nvm_node="$(newest_qualifying_nvm_node)"
+  [[ -z "$newest_nvm_node" ]] || candidates+=("$newest_nvm_node")
+  candidates+=("$HOME/.volta/bin/node" /opt/homebrew/bin/node /usr/local/bin/node)
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate" ]] || continue
+    if version_at_least "$(node_version_of "$candidate")" "$minimum_node_version"; then
       printf '%s\n' "$candidate"
       return 0
     fi
   done
+  echo "ERROR: No Node.js $minimum_node_version or newer was found in nvm, Volta, Homebrew, or /usr/local." >&2
   return 1
 }
 
-node_bin="$(resolve_node)" ||
-  die "Node.js was not found in a trusted absolute location."
+node_bin="$(resolve_node)" || exit 1
 [[ -n "$npm_bin" ]] || npm_bin="${node_bin%/*}/npm"
 cli_command=("$node_bin" "$private_cli_entry")
 
@@ -322,6 +381,11 @@ require_usable_cli() {
 }
 
 remove_setup_staging() {
+  if [[ -n "$displaced_cli_dir" && -e "$displaced_cli_dir" && ! -e "$private_cli_dir" ]]; then
+    "$mv_bin" "$displaced_cli_dir" "$private_cli_dir" ||
+      echo "Could not restore the previous private Playwright CLI." >&2
+  fi
+  displaced_cli_dir=""
   if [[ -n "$setup_staging_dir" ]]; then
     /bin/rm -rf "$setup_staging_dir"
     setup_staging_dir=""
@@ -342,13 +406,80 @@ remove_abandoned_setup_staging() {
   shopt -u nullglob
 }
 
+owned_session_attachment() {
+  local payload=""
+
+  if ! payload="$(run_cli_bounded 80 --json list 2>/dev/null)"; then
+    printf '%s\n' "unknown"
+    return 0
+  fi
+  printf '%s' "$payload" |
+    "$node_bin" -e '
+      let input = "";
+      process.stdin.setEncoding("utf8");
+      process.stdin.on("data", chunk => input += chunk);
+      process.stdin.on("end", () => {
+        try {
+          const browser = (JSON.parse(input).browsers || []).find(
+            item => item.name === process.argv[1]
+          );
+          process.stdout.write(browser && browser.attached === true ? "attached\n" : "detached\n");
+        } catch {
+          process.stdout.write("unknown\n");
+        }
+      });
+    ' "$session_name"
+}
+
+# Paths go through the environment, not argv, so this pipeline cannot match
+# itself. Only node running a private-copy script counts.
+private_cli_process_pids() {
+  local physical_cli_dir=""
+
+  physical_cli_dir="$(cd -P "$runtime_dir" && pwd -P)/cli" || return 1
+  "$ps_bin" -axo pid=,command= |
+    PRIVATE_CLI_LOGICAL="$private_cli_dir/node_modules/" \
+      PRIVATE_CLI_PHYSICAL="$physical_cli_dir/node_modules/" \
+      RESOLVED_NODE="$node_bin" \
+      awk '
+        function runs_private_script(command, prefix,    position, executable) {
+          position = index(command, " " prefix)
+          if (position == 0)
+            return 0
+          executable = substr(command, 1, position - 1)
+          return executable == ENVIRON["RESOLVED_NODE"] || executable == "node" || executable ~ /\/node$/
+        }
+        {
+          pid = $1
+          command = $0
+          sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", command)
+          if (runs_private_script(command, ENVIRON["PRIVATE_CLI_LOGICAL"]) ||
+            runs_private_script(command, ENVIRON["PRIVATE_CLI_PHYSICAL"]))
+            print pid
+        }
+      '
+}
+
+# Disconnect needs a working copy. When a damaged copy cannot report its
+# session, setup refuses only while a process runs from it.
 require_detached_session() {
-  [[ -z "$(intact_cli_fault "$private_cli_dir")" ]] || return 0
-  if [[ "$(session_state)" == "ready" ]]; then
+  local attachment=""
+  local pids=""
+
+  attachment="$(owned_session_attachment)"
+  if [[ "$attachment" == "detached" ]]; then
+    return 0
+  fi
+  if [[ "$attachment" == "attached" ]]; then
     echo "Session '$session_name' is attached through the current private Playwright CLI." >&2
     echo "Run 'disconnect' first, then run setup again. Setup never detaches on its own." >&2
     return 1
   fi
+  pids="$(private_cli_process_pids | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  [[ -z "$pids" ]] && return 0
+  echo "The private CLI cannot report session '$session_name', and a Playwright daemon from the private CLI is still running (pid $pids)." >&2
+  echo "Ask the user before stopping that process, then run setup again. Setup never stops it on its own." >&2
+  return 1
 }
 
 stage_private_cli() {
@@ -377,20 +508,17 @@ stage_private_cli() {
   fi
 }
 
+# remove_setup_staging moves the displaced copy back if the new copy never
+# reached its place, including after an interrupt.
 replace_private_cli() {
   local staged_cli="$1"
-  local previous_cli="$setup_staging_dir/previous"
 
   if [[ -e "$private_cli_dir" ]]; then
-    /bin/mv "$private_cli_dir" "$previous_cli" || return 1
+    displaced_cli_dir="$setup_staging_dir/previous"
+    "$mv_bin" "$private_cli_dir" "$displaced_cli_dir" || return 1
   fi
-  if ! /bin/mv "$staged_cli" "$private_cli_dir"; then
-    if [[ -e "$previous_cli" ]]; then
-      /bin/mv "$previous_cli" "$private_cli_dir" ||
-        echo "Could not restore the previous private Playwright CLI." >&2
-    fi
-    return 1
-  fi
+  "$mv_bin" "$staged_cli" "$private_cli_dir" || return 1
+  displaced_cli_dir=""
 }
 
 install_private_cli() {
@@ -1569,6 +1697,12 @@ ensure_session() {
   local tabs=""
 
   acquire_lock || return 1
+  # A concurrent setup can replace the CLI before this function holds the
+  # lock, so this check repeats before any attaching CLI call.
+  if ! require_usable_cli "$(supported_cli_fault)"; then
+    release_lock
+    return 2
+  fi
   state="$(session_state)"
 
   case "$state" in
@@ -1958,13 +2092,11 @@ case "$command_name" in
   ensure)
     wrapper_command_has_extras &&
       die "'ensure' does not accept browser-command arguments."
-    require_usable_cli "$(supported_cli_fault)"
     ensure_session false false
     ;;
   connect)
     wrapper_command_has_extras &&
       die "'connect' does not accept browser-command arguments."
-    require_usable_cli "$(supported_cli_fault)"
     ensure_session false true
     ;;
   attach)
@@ -1989,7 +2121,6 @@ case "$command_name" in
     run_cli "${forward_args[@]}"
     ;;
   *)
-    require_usable_cli "$(supported_cli_fault)"
     ensure_session true false
     run_cli_redacted -s="$session_name" "${forward_args[@]}"
     ;;

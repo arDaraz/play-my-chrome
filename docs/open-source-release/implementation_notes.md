@@ -349,10 +349,56 @@ A retest found one more issue, and the user asked for one new safeguard:
   both scripts. A shared sourced file would add a second file on the path
   that handles the token, for one regular expression.
 
+### Fixes from the Codex review of PR #2
+
+A test reproduced each finding before its fix, except the interrupted move,
+which a code trace confirmed. Its test must pause the move command, so the
+wrapper now resolves `mv` like its other system commands, and tests replace
+it.
+
+- Setup went ahead under a session that was attached but reported
+  `compatible: false`, because that reads as `stale`. Setup now reads
+  `attached === true` for the session name directly. When the copy cannot run
+  `--json list`, setup looks for any process whose command line runs code from
+  `<runtime>/cli`, by logical or physical path. It refuses only when one
+  exists. Refusing on every unreadable copy would deadlock, because
+  `disconnect` also needs a working copy. The upstream daemon starts as
+  `node <copy>/node_modules/playwright-core/lib/entry/cliDaemon.js <session>`,
+  so this check finds it.
+- `connect` checked the CLI before it took the lock, so a concurrent setup
+  could replace the CLI before the token went out. `ensure_session` now
+  checks the CLI after it takes the lock. The earlier check in dispatch was
+  removed for the commands that go through `ensure_session`, so each command
+  checks once.
+- An interrupt between the two moves deleted the previous copy with the
+  staging directory. The staging cleanup now moves the previous copy back when
+  the new copy never reached `<runtime>/cli`.
+- `resolve_node` took the nvm node with the newest file time. It now takes the
+  first candidate that meets `engines.node` in `cli/package.json`. For nvm it
+  reads the version from the directory name, so it runs no old node. The
+  chosen binary is then checked by running it. Without a qualifying node the
+  wrapper exits 1 and names the minimum.
+
+The process check first shipped with a bug. It passed the copy's path to
+`awk` as an argument, so `awk` found its own command line in the `ps` output,
+and `setup` failed on every fresh install. The mock `ps` returns a fixed file,
+so the tests missed it. The paths now reach `awk` through the environment. A
+line counts only when a node executable runs a script from the copy. One test
+feeds `awk`, `grep`, and `cat` lines that hold the path, and expects setup to
+go ahead. Another test runs the real `/bin/ps` against a stand-in node process
+started from the copy.
+
 ### Verification
 
-- `npm run verify`: ShellCheck, project validation, and 38 behavior tests
+- `npm run verify`: ShellCheck, project validation, and 44 behavior tests
   passed.
+- A throwaway `HOME` install with the real process list and real npm: `setup`
+  installed 0.1.21, a second `setup` reported it already installed, `doctor`
+  reported supported, and `setup` on a copy with `playwright-core` deleted
+  reinstalled it.
+- Mutation checks for this round: ignoring `compatible` in the attached check,
+  skipping the process check, removing the check under the lock, removing the
+  restore, and removing the nvm version filter each made a test fail.
 - The CI smoke step, run locally with real npm: `setup` installed 0.1.21 into a
   temporary runtime, and `doctor` reported `compatibility: supported`.
 - Packaging: `npx skills install` into a temporary `HOME` for Codex and Claude

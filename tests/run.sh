@@ -91,6 +91,8 @@ setup_case() {
   export PLAYWRIGHT_MY_CHROME_TEST_PBPASTE_BIN="$mock_dir/mock-pbpaste.sh"
   export PLAYWRIGHT_MY_CHROME_TEST_PBCOPY_BIN="$mock_dir/mock-pbcopy.sh"
   export PLAYWRIGHT_MY_CHROME_TEST_NPM_BIN="$mock_dir/mock-npm.sh"
+  export PLAYWRIGHT_MY_CHROME_TEST_MV_BIN="$mock_dir/mock-mv.sh"
+  export MOCK_MV_PID_FILE="$case_dir/mv.pid"
   export MOCK_CLI_LOG="$case_dir/cli.log"
   export MOCK_NPM_LOG="$case_dir/npm.log"
   export MOCK_SECURITY_LOG="$case_dir/security.log"
@@ -106,7 +108,8 @@ setup_case() {
   export MOCK_DETACH_MODE="stable"
   export MOCK_TAB_LIST_MODE="stable"
   export MOCK_CHANGE_PID_ON_LIST_ALL="0"
-  unset MOCK_CLI_VERSION PLAYWRIGHT_MY_CHROME_TEST_ATTACH_TIMEOUT_ATTEMPTS \
+  unset MOCK_CLI_VERSION MOCK_SESSION_COMPATIBLE MOCK_MV_HANG_TARGET \
+    PLAYWRIGHT_MY_CHROME_TEST_ATTACH_TIMEOUT_ATTEMPTS \
     PLAYWRIGHT_MY_CHROME_TEST_SETUP_TIMEOUT_ATTEMPTS
 
   : >"$MOCK_CLI_LOG"
@@ -950,6 +953,158 @@ test_malformed_stored_token_is_refused_before_attach() {
   pass_test "a prefixed or malformed stored token exits 3 before attach and can be repaired"
 }
 
+test_setup_refuses_attached_incompatible_session() {
+  setup_case
+  copy_skill_with_locked_version "0.1.999"
+  printf '%s\n' "ready" >"$MOCK_SESSION_STATE_FILE"
+  export MOCK_SESSION_COMPATIBLE="false"
+  run_capture "$case_dir/skill/scripts/playwright-my-chrome.sh" setup
+  assert_status 1
+  assert_contains "$output" "Run 'disconnect' first"
+  [[ ! -s "$MOCK_NPM_LOG" ]] || fail "setup ran npm under an attached, incompatible session"
+  pass_test "setup refuses a session that is attached but reported incompatible"
+}
+
+test_setup_with_unreadable_session_checks_for_a_live_daemon() {
+  local daemon_path=""
+  local physical_runtime=""
+
+  setup_case
+  copy_skill_with_locked_version "0.1.999"
+  /usr/bin/find "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/node_modules/@playwright/cli" -depth -delete
+  physical_runtime="$(cd -P "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR" && pwd -P)"
+  daemon_path="$physical_runtime/cli/node_modules/playwright-core/lib/entry/cliDaemon.js"
+  printf '4242 /usr/local/bin/node %s mychrome --extension\n' "$daemon_path" \
+    >"$MOCK_PS_OUTPUT_FILE"
+  run_capture "$case_dir/skill/scripts/playwright-my-chrome.sh" setup
+  assert_status 1
+  assert_contains "$output" "daemon from the private CLI is still running (pid 4242)"
+  [[ ! -s "$MOCK_NPM_LOG" ]] || fail "setup replaced a CLI that a live daemon runs from"
+
+  printf '%s\n' \
+    "5555 /usr/bin/awk -v logical=$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/node_modules/ {print}" \
+    "5556 /usr/bin/grep -F $physical_runtime/cli/node_modules/" \
+    "5557 /bin/cat $daemon_path" \
+    >"$MOCK_PS_OUTPUT_FILE"
+  run_capture "$case_dir/skill/scripts/playwright-my-chrome.sh" setup
+  assert_status 0
+  assert_contains "$output" "Installed @playwright/cli 0.1.999"
+  pass_test "setup on a damaged copy refuses only for a node process running from it"
+}
+
+test_connect_rechecks_the_cli_under_the_lock() {
+  local holder_pid=""
+  local output_file=""
+  local wrapper_pid=""
+
+  setup_case
+  set_normal_chrome 111
+  output_file="$case_dir/connect.out"
+  /bin/sleep 60 &
+  holder_pid=$!
+  /bin/mkdir -m 700 "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/ensure.lock"
+  printf '%s\n' "$holder_pid" >"$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/ensure.lock/pid"
+  /bin/chmod 600 "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/ensure.lock/pid"
+  "$wrapper" connect >"$output_file" 2>&1 &
+  wrapper_pid=$!
+  # Only the lock wait runs sleep as a direct child of the wrapper. This loop
+  # waits for that.
+  until /usr/bin/pgrep -P "$wrapper_pid" -x sleep >/dev/null; do
+    kill -0 "$wrapper_pid" 2>/dev/null || fail "connect exited before it waited for the lock"
+    sleep 0.05
+  done
+  printf '\n' >>"$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/package-lock.json"
+  kill "$holder_pid"
+  set +e
+  wait "$wrapper_pid"
+  status=$?
+  set -e
+  output="$(<"$output_file")"
+  assert_status 2
+  assert_contains "$output" "was installed from another skill release's lockfile"
+  assert_file_not_contains "$MOCK_CLI_LOG" "--json attach"
+  [[ ! -s "$MOCK_SECURITY_LOG" ]] || fail "connect read the token after the CLI changed"
+  pass_test "connect checks the CLI again after it takes the lock"
+}
+
+test_interrupted_swap_restores_the_previous_cli() {
+  local output_file=""
+  local wrapper_pid=""
+
+  setup_case
+  copy_skill_with_locked_version "0.1.999"
+  output_file="$case_dir/setup.out"
+  export MOCK_MV_HANG_TARGET="$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli"
+  "$case_dir/skill/scripts/playwright-my-chrome.sh" setup >"$output_file" 2>&1 &
+  wrapper_pid=$!
+  wait_for_file "$MOCK_MV_PID_FILE" "$wrapper_pid"
+  [[ ! -e "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli" ]] ||
+    fail "the test did not pause setup between its two moves"
+  kill -TERM "$wrapper_pid"
+  kill -TERM "$(<"$MOCK_MV_PID_FILE")"
+  set +e
+  wait "$wrapper_pid"
+  status=$?
+  set -e
+  output="$(<"$output_file")"
+  assert_status 143
+  unset MOCK_MV_HANG_TARGET
+  assert_no_setup_leftovers
+  run_capture "$wrapper" doctor
+  assert_contains "$output" "compatibility: supported (requires $locked_cli_version)"
+  pass_test "an interrupt between the two setup moves restores the previous CLI"
+}
+
+test_node_resolution_skips_versions_below_the_minimum() {
+  local new_node_dir=""
+  local old_node_dir=""
+
+  setup_case
+  new_node_dir="$HOME/.nvm/versions/node/v$(node -p 'process.versions.node')/bin"
+  old_node_dir="$HOME/.nvm/versions/node/v20.0.0/bin"
+  /bin/mkdir -p "$new_node_dir" "$old_node_dir"
+  /bin/ln -s "$PLAYWRIGHT_MY_CHROME_NODE" "$new_node_dir/node"
+  /bin/cat >"$old_node_dir/node" <<SCRIPT
+#!/bin/sh
+echo ran >>"$case_dir/old-node.log"
+echo 20.0.0
+SCRIPT
+  /bin/chmod +x "$old_node_dir/node"
+  /usr/bin/touch -t 203001010000 "$old_node_dir/node"
+  PLAYWRIGHT_MY_CHROME_NODE="" run_capture "$wrapper" doctor
+  assert_status 0
+  assert_contains "$output" "compatibility: supported"
+  [[ ! -e "$case_dir/old-node.log" ]] || fail "the wrapper ran a Node.js below the minimum"
+
+  PLAYWRIGHT_MY_CHROME_NODE="$old_node_dir/node" run_capture "$wrapper" doctor
+  assert_status 1
+  assert_contains "$output" "Node.js 20.0.0 is older than the required 22.20.0"
+  pass_test "node resolution skips a Node.js below the engines minimum"
+}
+
+test_setup_checks_the_real_process_list_for_private_cli_processes() {
+  local standin_pid=""
+  local standin_script=""
+
+  setup_case
+  /usr/bin/find "$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/node_modules/@playwright/cli" -depth -delete
+  export PLAYWRIGHT_MY_CHROME_TEST_PS_BIN="/bin/ps"
+  standin_script="$PLAYWRIGHT_MY_CHROME_RUNTIME_DIR/cli/node_modules/standin-daemon.js"
+  printf '%s\n' 'setInterval(() => {}, 1000);' >"$standin_script"
+  "$PLAYWRIGHT_MY_CHROME_NODE" "$standin_script" &
+  standin_pid=$!
+  run_capture "$wrapper" setup
+  kill "$standin_pid"
+  wait "$standin_pid" 2>/dev/null || true
+  assert_status 1
+  assert_contains "$output" "still running (pid $standin_pid)"
+
+  run_capture "$wrapper" setup
+  assert_status 0
+  assert_contains "$output" "Installed @playwright/cli $locked_cli_version"
+  pass_test "the real process list finds a node process from the copy and never the check itself"
+}
+
 test_missing_chrome_refuses_before_token_read
 test_ambiguous_chrome_refuses_before_token_read
 test_successful_connect_uses_stable_existing_chrome
@@ -988,6 +1143,12 @@ test_setup_refuses_while_session_is_attached
 test_cleanup_plan_names_no_global_cli
 test_version_prints_only_the_private_cli_version
 test_malformed_stored_token_is_refused_before_attach
+test_setup_refuses_attached_incompatible_session
+test_setup_with_unreadable_session_checks_for_a_live_daemon
+test_setup_checks_the_real_process_list_for_private_cli_processes
+test_connect_rechecks_the_cli_under_the_lock
+test_interrupted_swap_restores_the_previous_cli
+test_node_resolution_skips_versions_below_the_minimum
 
 cleanup_case
 printf 'All %d behavior tests passed.\n' "$passed"

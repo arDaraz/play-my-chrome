@@ -90,6 +90,8 @@ if dependency_fields != ["dependencies"] or list(manifest["dependencies"]) != ["
 supported_version = manifest["dependencies"]["@playwright/cli"]
 if not re.fullmatch(r"\d+\.\d+\.\d+", supported_version):
     fail(f"cli/package.json must pin an exact @playwright/cli version, not {supported_version!r}")
+if not re.fullmatch(r">=\d+\.\d+\.\d+", manifest.get("engines", {}).get("node", "")):
+    fail("cli/package.json must set engines.node as >=MAJOR.MINOR.PATCH for the wrapper to read")
 locked_version = lock.get("packages", {}).get("node_modules/@playwright/cli", {}).get("version")
 if locked_version != supported_version:
     fail(f"cli/package-lock.json locks @playwright/cli {locked_version}, not {supported_version}")

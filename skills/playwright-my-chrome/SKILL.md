@@ -81,6 +81,9 @@ These environment variables provide configuration overrides:
 The Node override must be an absolute path to a trusted Node.js executable.
 Without it, the wrapper checks only standard absolute NVM, Volta, Homebrew, and
 `/usr/local` locations. It never selects Node through caller-controlled `PATH`.
+The wrapper uses the first Node.js that meets the `engines.node` minimum in
+`cli/package.json`, starting with the newest qualifying nvm install. When none
+qualifies, it exits with status 1 and names the minimum.
 A runtime override must also be absolute and point to a dedicated, non-symlink
 directory owned by the desktop user. The wrapper creates new runtime directories privately and
 refuses to claim a non-empty unrelated directory or modify its permissions.
@@ -135,7 +138,9 @@ reinstall, delete `<runtime>/cli` and run `setup`.
 `setup` refuses while the `mychrome` session is attached, because it replaces
 the CLI that session runs from. When that happens, run `disconnect`, then
 `setup`, and ask for approval again before `connect`. `disconnect` still works
-with an intact copy from an earlier skill release.
+with an intact copy from an earlier skill release. If the copy is too damaged
+to report the session and a process still runs from it, `setup` names that
+process ID. Report it to the user, and never stop that process yourself.
 
 A `SECURITY:` message about `<runtime>/cli` with exit status 6 means that
 directory is a symbolic link, belongs to another user, or does not have mode

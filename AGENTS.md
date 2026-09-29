@@ -19,7 +19,7 @@ request.
 
 ```bash
 npm run lint      # shellcheck + bash -n on every .sh, then tests/validate_skill.py
-npm test          # tests/run.sh, the behavior tests (about 50s)
+npm test          # tests/run.sh, the behavior tests (about a minute)
 npm run verify    # both
 npx skills@1.5.21 install . --list   # third release check, Skills CLI discovery
 ```
@@ -49,7 +49,8 @@ is a fail-closed wrapper around a private copy of `@playwright/cli`, not a
 library. Reading it top to bottom gives the whole design:
 
 1. **Preamble** resolves Node from fixed absolute locations (nvm, Volta,
-   Homebrew, `/usr/local`), never through caller `PATH`. It reads the supported
+   Homebrew, `/usr/local`), never through caller `PATH`, and takes the first
+   one that meets `engines.node` in `cli/package.json`. It reads the supported
    CLI version from `cli/package-lock.json`, then resets `PATH` to system
    directories so nothing secret-bearing can be shimmed. Every CLI call runs
    `node <runtime>/cli/node_modules/@playwright/cli/playwright-cli.js`. The
@@ -71,15 +72,20 @@ library. Reading it top to bottom gives the whole design:
    metadata files name, and refuse traversal-shaped paths.
 5. **Setup** (`setup_private_cli`) installs that private copy. Under the
    wrapper lock it removes abandoned `.cli-setup.*` directories and refuses
-   while `mychrome` is attached. It runs `npm ci --ignore-scripts` on the
+   while `mychrome` reports `attached: true`, whatever its `compatible` value.
+   When the copy cannot run `--json list`, setup refuses only if a process
+   still runs code from `<runtime>/cli`. It runs `npm ci --ignore-scripts` on the
    shipped lock in a private staging directory, with the npm next to the
    resolved Node, as a tracked child with a 10 minute bound. It checks the
    staged copy, then moves it into `<runtime>/cli`. A failed, timed-out, or
-   interrupted setup kills npm and removes the staging directory. A copy is
+   interrupted setup kills npm and removes the staging directory. If the old
+   copy was already moved aside, the cleanup moves it back. A copy is
    supported (`supported_cli_fault`) when its lock is byte-identical to the
    shipped lock, every locked package is installed at its locked version, and
-   `--version` matches. `disconnect` needs only an intact copy
-   (`intact_cli_fault`), so an old release's copy can still detach.
+   `--version` matches. `ensure_session` checks this again after it takes the
+   lock, so a concurrent setup cannot swap the CLI before an attach.
+   `disconnect` needs only an intact copy (`intact_cli_fault`), so an old
+   release's copy can still detach.
 6. **Dispatch** at the bottom is an allowlist. `open`, raw `attach`, `show`,
    `install`, `close-all`, and `kill-all` are rejected locally. `setup` is a
    wrapper command, not the forwarded `install`. Help prints the wrapper's own
