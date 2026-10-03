@@ -5,6 +5,10 @@ import {assertPrivate} from './runtime.mjs';
 import {SkillError} from './errors.mjs';
 
 export const requestLimit = 1024 * 1024;
+export const commandTimeout = 45000;
+export const stuckTimeout = 5 * 60 * 1000;
+// A queued request can wait behind a slow command until that command reaches the stuck limit.
+export const requestTimeout = stuckTimeout + commandTimeout + 15000;
 
 export function socketPath(runtime) {
   return join(runtime, 'session.sock');
@@ -18,7 +22,7 @@ export function sendRequest(runtime, request) {
     const socket = createConnection(path);
     let response = '';
     socket.setEncoding('utf8');
-    socket.setTimeout(65000, () => socket.destroy(new SkillError('Session request timed out. Run doctor.', 124)));
+    socket.setTimeout(requestTimeout, () => socket.destroy(new SkillError('Session request timed out. Run doctor.', 124)));
     socket.once('connect', () => socket.write(`${JSON.stringify(request)}\n`));
     socket.on('data', chunk => {
       response += chunk;

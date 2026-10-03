@@ -31,9 +31,10 @@ page or local script code. They are not a sandbox for untrusted code.
 - A shared connection serializes commands. Ordinary commands never reconnect.
 - `disconnect` calls Puppeteer's disconnect API and never closes Chrome.
 - `tab-close` refuses to close an existing user tab.
-- Attachment and page operations have deadlines. A session deadline ends the
-  connection and blocks further commands. JavaScript already running in the
-  page can continue. Inspect page state before retrying an action.
+- Attachment and page operations have deadlines. A command past its deadline
+  reports a timeout and blocks further commands until it finishes. A command
+  still running after five minutes ends the connection. JavaScript already
+  running in the page can continue. Inspect page state before retrying an action.
 - Setup uses exact, integrity-locked `puppeteer-core` dependencies and disables
   npm package scripts. It refuses while a session exists.
 - The runtime checks the shipped lock and every installed dependency version

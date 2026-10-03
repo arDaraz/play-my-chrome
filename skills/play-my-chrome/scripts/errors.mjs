@@ -5,10 +5,10 @@ export class SkillError extends Error {
   }
 }
 
-export async function bounded(operation, milliseconds) {
+export async function bounded(operation, milliseconds, message = 'Operation timed out. Run connect again when Chrome is ready.') {
   let timer;
   const deadline = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new SkillError('Operation timed out. Run connect again when Chrome is ready.', 124)), milliseconds);
+    timer = setTimeout(() => reject(new SkillError(message, 124)), milliseconds);
   });
   try {
     return await Promise.race([operation, deadline]);
