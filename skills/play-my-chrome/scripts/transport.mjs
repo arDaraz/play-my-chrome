@@ -5,8 +5,10 @@ import {assertPrivate} from './runtime.mjs';
 import {SkillError} from './errors.mjs';
 
 export const requestLimit = 1024 * 1024;
-// A queued request can wait behind a slow command until the session's stuck-command limit.
-export const requestTimeout = 6 * 60 * 1000;
+export const commandTimeout = 45000;
+export const stuckTimeout = 5 * 60 * 1000;
+// A queued request can wait behind a slow command until that command reaches the stuck limit.
+export const requestTimeout = stuckTimeout + commandTimeout + 15000;
 
 export function socketPath(runtime) {
   return join(runtime, 'session.sock');

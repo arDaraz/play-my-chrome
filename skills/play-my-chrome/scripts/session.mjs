@@ -2,7 +2,7 @@ import {chmodSync, lstatSync, unlinkSync} from 'node:fs';
 import {createServer} from 'node:net';
 import {createBrowserCommands, validateCommand} from './browser.mjs';
 import {bounded, SkillError} from './errors.mjs';
-import {requestLimit, requestTimeout, socketPath} from './transport.mjs';
+import {commandTimeout as defaultCommandTimeout, requestLimit, requestTimeout, socketPath, stuckTimeout as defaultStuckTimeout} from './transport.mjs';
 
 export function validateRequest(request) {
   if (!request || typeof request !== 'object' || !Array.isArray(request.args)) throw new SkillError('Invalid session request.');
@@ -45,6 +45,7 @@ class ChromeSession {
     this.connectTimeout = connectTimeout;
     this.commandTimeout = commandTimeout;
     this.stuckTimeout = stuckTimeout;
+    this.timeoutMessage = `The command exceeded ${commandTimeout / 1000} seconds. The connection stays open; the next command waits until this one finishes.`;
     this.server = createServer(socket => receiveRequest(socket, (request, isActive) => this.dispatch(request, isActive)));
   }
 
@@ -112,12 +113,13 @@ class ChromeSession {
   async settle(running) {
     if (this.state === 'disconnected') return;
     let timer;
-    const stuck = new Promise(resolve => {
-      timer = setTimeout(resolve, this.stuckTimeout, true);
-      this.endStuckWait = () => resolve(false);
+    const limit = new Promise(resolve => {
+      timer = setTimeout(resolve, this.stuckTimeout, 'stuck');
+      this.endStuckWait = () => resolve('stopped');
     });
+    const finished = running.then(() => 'finished', () => 'finished');
     try {
-      if (await Promise.race([running.then(() => false, () => false), stuck])) this.stopInBackground();
+      if (await Promise.race([finished, limit]) === 'stuck') this.stopInBackground();
     } finally {
       clearTimeout(timer);
     }
@@ -138,14 +140,13 @@ class ChromeSession {
     });
     // A timed-out command still holds the queue until it settles, so page actions never overlap.
     this.queue = started.then(({running}) => this.settle(running), () => {});
-    const timeoutMessage = `The command exceeded ${this.commandTimeout / 1000} seconds. The connection stays open; the next command waits until this one finishes.`;
-    return started.then(({running}) => bounded(running, this.commandTimeout, timeoutMessage));
+    return started.then(({running}) => request.command === 'disconnect' ? running : bounded(running, this.commandTimeout, this.timeoutMessage));
   }
 
   status() { return {state: this.state, release: this.release, profile: this.profile}; }
 }
 
-export async function startSession({connectTimeout = 60000, commandTimeout = 45000, stuckTimeout = 5 * 60 * 1000, ...options}) {
+export async function startSession({connectTimeout = 60000, commandTimeout = defaultCommandTimeout, stuckTimeout = defaultStuckTimeout, ...options}) {
   const session = new ChromeSession({...options, connectTimeout, commandTimeout, stuckTimeout});
   await session.listen();
   return {stop: () => session.stop(), ready: session.ready};
