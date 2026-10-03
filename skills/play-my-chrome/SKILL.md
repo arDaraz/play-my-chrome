@@ -81,8 +81,7 @@ Keep the shared connection alive between related tasks. Commands reuse the
 connection without another Chrome approval or setup step. Only `connect` can
 start a connection. `ensure` checks a session without reconnecting.
 `disconnect` stops this skill's connection and leaves Chrome and its tabs open.
-An explicit disconnect waits for pending commands. A deadline still ends the
-connection immediately.
+An explicit disconnect waits for pending commands.
 Use `disconnect` when the user asks, before replacing the runtime with `setup`, or when
 connection recovery requires it.
 
@@ -91,9 +90,11 @@ debugging availability, and session state without connecting. A missing or
 changed locked dependency requires `setup`. An older active session requires
 `disconnect`, then `setup` and `connect`. A connection timeout requires checking
 Chrome's native dialog and debugging setting; it never requires a token.
-A page command that exceeds the session deadline disconnects the session.
-JavaScript already running in the page can continue. Inspect the page before
-retrying an action.
+Each command, including a `run` script, has a 45-second deadline. Keep each
+command shorter, and split long waits into separate commands. A command past
+the deadline returns a timeout, but the connection stays open. The next command
+waits until the slow one finishes. A command still running after five minutes
+ends the connection. Inspect the page before retrying an action.
 
 Exactly one normal Chrome main process must be running. The wrapper checks
 Chrome's process identity before and after attachment. An unclear or changed
