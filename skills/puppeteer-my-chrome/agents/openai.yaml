@@ -1,0 +1,4 @@
+interface:
+  display_name: "Puppeteer My Chrome"
+  short_description: "Control signed-in Chrome with native debugging"
+  default_prompt: "Use $puppeteer-my-chrome to complete this task in my existing signed-in Chrome session."

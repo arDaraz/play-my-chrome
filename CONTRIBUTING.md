@@ -1,66 +1,40 @@
 # Contributing
 
-Pull requests are welcome. This page lists what a change is checked against
-before it merges.
+Run `npm ci --ignore-scripts`, then `npm run verify`. Node.js 22.20 or newer,
+Python 3, and ShellCheck are required. Tests exercise fake browser behavior and
+private local sockets without touching real Chrome profiles or credentials.
 
-## Development
+## Dependencies
 
-The skill pins its Playwright CLI in
-`skills/playwright-my-chrome/cli/package-lock.json`, and the wrapper's `setup`
-command installs a private copy from it. That lockfile is the only place the
-version lives. To move to a new release, change the version in
-`skills/playwright-my-chrome/cli/package.json` and regenerate the lock:
+The skill's only direct runtime dependency is `puppeteer-core`, pinned in
+`skills/puppeteer-my-chrome/cli/package.json` and its lockfile. Regenerate the
+lock with npm after changing the exact version. Check native stable-channel
+connection discovery against the installed release before updating it.
 
-```bash
-npm install --package-lock-only --ignore-scripts \
-  --prefix skills/playwright-my-chrome/cli
-```
+## Installation checks
 
-Audit the new release against the CLI behavior the wrapper depends on before
-the change merges. `tests/validate_skill.py` fails if any other file spells the
-version.
+Use the repository's locked Skills CLI to list and copy-install the skill for
+Codex, Claude Code, universal, and wildcard agent targets into temporary folders.
+Confirm each copy includes the license, executable wrapper, runtime scripts,
+manifest, and lockfile. CI runs these checks.
 
-Run all checks on macOS:
+## Live checks
 
-```bash
-/bin/bash tests/lint.sh
-/bin/bash tests/run.sh
-npx skills@1.5.21 install . --list
-```
-
-Tests must use the fake executables in `tests/mocks`. No test may touch a real
-extension token, Keychain item, clipboard, or Chrome profile. A suite that needs
-a real browser to pass is a suite nobody can trust.
-
-## Testing a change against a real browser
-
-`npx skills install` copies the skill directory. It does not link to it. An
-installed copy therefore goes stale the moment `scripts/` changes, and running
-the installed wrapper would test the old code without saying so.
-
-Reinstall before any manual check against real Chrome:
+Install a fresh copy from the task worktree before a manual browser check:
 
 ```bash
-npx skills install . --skill playwright-my-chrome --global \
-  --agent codex --agent claude-code
+npx skills install . --skill puppeteer-my-chrome --global \
+  --agent codex --agent claude-code --copy --yes
 ```
 
-Then run the installed wrapper's `setup`, and use the wrapper from the
-installed path, not from this repository, so the check covers what a user
-actually gets.
+Run the installed wrapper's `setup` and `doctor`. Enable Chrome's native remote
+debugging setting, run `connect`, and allow the Chrome dialog. Create a task tab,
+read its rendered content, and disconnect. Confirm Chrome and existing tabs
+remain open. Report unavailable debugging or denied approval as a pending check.
 
-## Pull requests
+## Changes
 
-- Say which browser-control or security behavior changes, and why.
-- Add a regression test for every safeguard and every bug fix. This one is not
-  waived.
-- Keep `SKILL.md` vendor-neutral and under 500 lines. It has to stay readable by
-  any agent, not only the one you use.
-- Do not add tokens, screenshots of extension connection pages, cookies, browser
-  profiles, or machine-specific paths.
-- Keep the fail-closed behavior for unsupported CLI versions and for unclear
-  Chrome process state. If a change touches one of those paths, explain what
-  happens on the failure branch.
-
-Found something security sensitive? Do not open a pull request for it. Use a
-private GitHub security advisory, as described in [SECURITY.md](SECURITY.md).
+Add a regression test for every changed safeguard and bug fix. Keep the existing
+browser, profile, and disconnect-only contracts. Describe changed user behavior
+and access limits in the pull request. Report security-sensitive findings
+through [SECURITY.md](SECURITY.md).
