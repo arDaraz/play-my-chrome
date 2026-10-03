@@ -2,6 +2,8 @@ import {isAbsolute} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {SkillError} from './errors.mjs';
 
+const pageTimeout = 15000;
+
 const arities = {'tab-list': 0, 'tab-new': [0, 1], 'tab-select': 1, 'tab-close': 0,
   goto: 1, snapshot: 0, click: 1, fill: 2, press: 1, eval: 1, run: 1, screenshot: 1};
 
@@ -32,6 +34,12 @@ class BrowserCommands {
     return this.tabs.get(page);
   }
 
+  select(page) {
+    page.setDefaultTimeout(pageTimeout);
+    page.setDefaultNavigationTimeout(pageTimeout);
+    this.selected = page;
+  }
+
   selectedPage() {
     if (!this.selected || this.selected.isClosed()) throw new SkillError('Select an open tab with tab-select, or create one with tab-new.');
     return this.selected;
@@ -50,10 +58,8 @@ class BrowserCommands {
     const page = await this.browser.newPage();
     try { await this.profileScope?.assertPage(page); }
     catch (error) { await page.close(); throw error; }
-    page.setDefaultTimeout(15000);
-    page.setDefaultNavigationTimeout(15000);
     this.ownedTabs.add(page);
-    this.selected = page;
+    this.select(page);
     if (url !== 'about:blank') await page.goto(url, {waitUntil: 'domcontentloaded'});
     return {id: this.tabId(page), url: page.url()};
   }
@@ -62,9 +68,7 @@ class BrowserCommands {
     const page = [...this.tabs].find(([tab, storedId]) => storedId === id && !tab.isClosed())?.[0];
     if (!page) throw new SkillError('The tab ID is unavailable. Run tab-list again.');
     await this.profileScope?.assertPage(page);
-    this.selected = page;
-    page.setDefaultTimeout(15000);
-    page.setDefaultNavigationTimeout(15000);
+    this.select(page);
     return {id: this.tabId(page), url: page.url()};
   }
 

@@ -1,8 +1,8 @@
 import {execFileSync} from 'node:child_process';
 import {lstatSync, readFileSync} from 'node:fs';
-import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {SkillError} from './errors.mjs';
+import {chromeDirectory} from './profiles.mjs';
 
 const executable = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const debuggingHelp = 'In Chrome 144 or newer, enable chrome://inspect/#remote-debugging, then run connect and click Allow in Chrome.';
@@ -42,8 +42,9 @@ export function chromePreflight() {
   const pids = runningChrome();
   const version = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleShortVersionString', '/Applications/Google Chrome.app/Contents/Info.plist'], {encoding: 'utf8', timeout: 5000}).trim();
   validateChromeVersion(version);
-  const portFile = join(homedir(), 'Library/Application Support/Google/Chrome/DevToolsActivePort');
-  if (!lstatSync(portFile, {throwIfNoEntry: false})?.isFile() || lstatSync(portFile).uid !== process.getuid()) {
+  const portFile = join(chromeDirectory, 'DevToolsActivePort');
+  const portStat = lstatSync(portFile, {throwIfNoEntry: false});
+  if (!portStat?.isFile() || portStat.uid !== process.getuid()) {
     throw new SkillError(`Chrome's native debugging is unavailable. ${debuggingHelp}`, 5);
   }
   validateActivePort(readFileSync(portFile, 'utf8'));

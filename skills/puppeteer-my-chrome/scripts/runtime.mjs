@@ -27,7 +27,7 @@ export function assertPrivate(path, kind) {
 }
 
 export function prepareRuntime(runtime) {
-  if (!existsSync(dirname(runtime))) mkdirSync(dirname(runtime), {recursive: true});
+  mkdirSync(dirname(runtime), {recursive: true});
   if (!lstatSync(runtime, {throwIfNoEntry: false})) mkdirSync(runtime, {mode: 0o700});
   assertPrivate(runtime, 'directory');
   if (Buffer.byteLength(join(runtime, 'session.sock')) > 100) {

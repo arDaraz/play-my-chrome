@@ -18,8 +18,8 @@ const help = `Usage: puppeteer-my-chrome.sh <command> [arguments]
   ensure                    Check the existing connection
   disconnect                Disconnect Puppeteer; leave Chrome and tabs open
   tab-list                  List tabs with stable session IDs
-  tab-new [url]              Create and select a tab
-  tab-select <id>            Select a tab from tab-list
+  tab-new [url]             Create and select a tab
+  tab-select <id>           Select a tab from tab-list
   tab-close                 Close only a tab created by this skill
   goto <url>                Navigate the selected tab
   snapshot                  Read the selected tab's accessibility tree
