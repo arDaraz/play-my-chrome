@@ -405,6 +405,56 @@ test('the session serializes concurrent page actions', async t => {
   assert.equal(maximum, 1);
 });
 
+test('explicit disconnect waits for pending page actions to complete', async t => {
+  const {runtime, browser, session} = await sessionFixture(t);
+  await session.ready;
+  const events = [];
+  let release;
+  let started;
+  const startedPromise = new Promise(resolve => { started = resolve; });
+  browser.original.evaluate = async () => {
+    events.push('action-start');
+    await new Promise(resolve => { release = resolve; started(); });
+    events.push('action-complete');
+    return 'done';
+  };
+  const disconnectBrowser = browser.disconnect;
+  browser.disconnect = async () => { events.push('disconnect'); await disconnectBrowser(); };
+  const [{id}] = await sendRequest(runtime, {command: 'tab-list', args: []});
+  await sendRequest(runtime, {command: 'tab-select', args: [id]});
+  const action = sendRequest(runtime, {command: 'eval', args: ['document.title']});
+  await startedPromise;
+  const disconnect = sendRequest(runtime, {command: 'disconnect', args: []});
+  try {
+    await delay(10);
+    assert.deepEqual(events, ['action-start']);
+  } finally {
+    release();
+    await Promise.all([action, disconnect]);
+  }
+  await session.stop();
+  assert.deepEqual(events, ['action-start', 'action-complete', 'disconnect']);
+  assert.equal(browser.original.closed, false);
+});
+
+test('a stuck page command times out even when explicit disconnect is queued', async t => {
+  const {runtime, browser, session} = await sessionFixture(t, {commandTimeout: 30});
+  await session.ready;
+  let started;
+  const startedPromise = new Promise(resolve => { started = resolve; });
+  browser.original.evaluate = () => { started(); return new Promise(() => {}); };
+  const [{id}] = await sendRequest(runtime, {command: 'tab-list', args: []});
+  await sendRequest(runtime, {command: 'tab-select', args: [id]});
+  const timedOut = assert.rejects(sendRequest(runtime, {command: 'eval', args: ['document.title']}), {exitCode: 124});
+  await startedPromise;
+  const disconnected = sendRequest(runtime, {command: 'disconnect', args: []});
+  await timedOut;
+  assert.equal((await disconnected).state, 'disconnected');
+  await session.stop();
+  assert.equal(browser.disconnectCount, 1);
+  assert.equal(browser.original.closed, false);
+});
+
 test('a queued command cannot start after its client disconnects', async t => {
   const {runtime, browser, session} = await sessionFixture(t);
   await session.ready;

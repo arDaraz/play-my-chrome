@@ -119,7 +119,6 @@ class ChromeSession {
 
   dispatch(request, isActive) {
     if (request.command === 'status') return Promise.resolve(this.status());
-    if (request.command === 'disconnect') return this.execute(request);
     const pending = this.queue.then(() => {
       if (!isActive()) throw new SkillError('The request ended before its command started.', 4);
       return this.execute(request);

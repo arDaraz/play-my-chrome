@@ -81,7 +81,9 @@ Keep the shared connection alive between related tasks. Commands reuse the
 connection without another Chrome approval or setup step. Only `connect` can
 start a connection. `ensure` checks a session without reconnecting.
 `disconnect` stops this skill's connection and leaves Chrome and its tabs open.
-Use it when the user asks, before replacing the runtime with `setup`, or when
+An explicit disconnect waits for pending commands. A deadline still ends the
+connection immediately.
+Use `disconnect` when the user asks, before replacing the runtime with `setup`, or when
 connection recovery requires it.
 
 Run `doctor` for a setup or connection failure. It reports installation, native
