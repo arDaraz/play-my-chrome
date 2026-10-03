@@ -438,7 +438,7 @@ test('explicit disconnect waits for pending page actions to complete', async t =
 });
 
 test('a stuck page command times out even when explicit disconnect is queued', async t => {
-  const {runtime, browser, session} = await sessionFixture(t, {commandTimeout: 30});
+  const {runtime, browser, session} = await sessionFixture(t, {commandTimeout: 30, stuckTimeout: 60});
   await session.ready;
   let started;
   const startedPromise = new Promise(resolve => { started = resolve; });
@@ -500,16 +500,54 @@ test('connection timeout removes the socket and disconnects a late browser', asy
   assert.equal(existsSync(socketPath(runtime)), false);
 });
 
-test('command timeout ends the connection instead of allowing more actions', async t => {
+test('a command timeout keeps the connection and holds later commands until the slow command finishes', async t => {
+  const {runtime, browser, session} = await sessionFixture(t, {commandTimeout: 20});
+  await session.ready;
+  const events = [];
+  let finish;
+  browser.original.evaluate = () => new Promise(resolve => {
+    events.push('slow-start');
+    finish = () => { events.push('slow-end'); resolve('late'); };
+  });
+  browser.original.keyboard.press = async () => { events.push('press'); };
+  const [{id}] = await sendRequest(runtime, {command: 'tab-list', args: []});
+  await sendRequest(runtime, {command: 'tab-select', args: [id]});
+  await assert.rejects(sendRequest(runtime, {command: 'eval', args: ['document.title']}), {exitCode: 124, message: /connection stays open/});
+  const press = sendRequest(runtime, {command: 'press', args: ['Enter']});
+  await delay(30);
+  assert.deepEqual(events, ['slow-start']);
+  finish();
+  await press;
+  assert.deepEqual(events, ['slow-start', 'slow-end', 'press']);
+  assert.equal(browser.connected, true);
+  assert.equal(browser.disconnectCount, 0);
+  assert.equal((await sendRequest(runtime, {command: 'ensure', args: []})).state, 'ready');
+});
+
+test('Chrome shutdown releases commands queued behind a timed-out command', async t => {
   const {runtime, browser, session} = await sessionFixture(t, {commandTimeout: 20});
   await session.ready;
   browser.original.evaluate = () => new Promise(() => {});
   const [{id}] = await sendRequest(runtime, {command: 'tab-list', args: []});
   await sendRequest(runtime, {command: 'tab-select', args: [id]});
   await assert.rejects(sendRequest(runtime, {command: 'eval', args: ['document.title']}), {exitCode: 124});
+  const press = assert.rejects(sendRequest(runtime, {command: 'press', args: ['Enter']}), {exitCode: 4});
+  await delay(10);
+  await browser.disconnect();
+  await press;
   await session.stop();
-  assert.equal(browser.connected, false);
+});
+
+test('a command stuck past the hard limit ends the connection and blocks further actions', async t => {
+  const {runtime, browser, session} = await sessionFixture(t, {commandTimeout: 20, stuckTimeout: 60});
+  await session.ready;
+  browser.original.evaluate = () => new Promise(() => {});
+  const [{id}] = await sendRequest(runtime, {command: 'tab-list', args: []});
+  await sendRequest(runtime, {command: 'tab-select', args: [id]});
+  await assert.rejects(sendRequest(runtime, {command: 'eval', args: ['document.title']}), {exitCode: 124});
   await assert.rejects(sendRequest(runtime, {command: 'press', args: ['Enter']}), {exitCode: 4});
+  assert.equal(browser.connected, false);
+  assert.equal(browser.disconnectCount, 1);
   assert.equal(browser.original.closed, false);
 });
 

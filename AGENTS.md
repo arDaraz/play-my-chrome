@@ -21,8 +21,10 @@ Use native stable-channel discovery, not a user-supplied endpoint, extension,
 credential, or remote debugging launch flag. Preserve process identity checks,
 private directory and socket checks, request validation, serial execution,
 connection deadlines, named profile checks, and disconnect-only cleanup.
-A failed preflight must stop before connecting. A timeout must block further
-commands. Page JavaScript can continue after disconnect.
+A failed preflight must stop before connecting. A command timeout must keep the
+connection open and block further commands until that command finishes. A
+command stuck past the hard limit must end the connection. Page JavaScript can
+continue after disconnect.
 
 ## Verification
 
