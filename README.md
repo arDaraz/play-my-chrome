@@ -1,6 +1,6 @@
-# Puppeteer My Chrome
+# Play My Chrome
 
-[![CI](https://github.com/arDaraz/playwright-my-chrome/actions/workflows/ci.yml/badge.svg)](https://github.com/arDaraz/playwright-my-chrome/actions/workflows/ci.yml)
+[![CI](https://github.com/arDaraz/play-my-chrome/actions/workflows/ci.yml/badge.svg)](https://github.com/arDaraz/play-my-chrome/actions/workflows/ci.yml)
 
 Control the Chrome you already have open and signed in, through Puppeteer and
 Chrome's native remote debugging. The skill needs no extension or token.
@@ -18,36 +18,35 @@ that connection alive between commands and never launches another browser.
 
 ## Install
 
-The repository URL remains `arDaraz/playwright-my-chrome`. The replacement skill
-is named `puppeteer-my-chrome`:
+Install the `play-my-chrome` skill:
 
 ```bash
-npx skills install arDaraz/playwright-my-chrome \
-  --skill puppeteer-my-chrome --global --agent codex --agent claude-code
+npx skills install arDaraz/play-my-chrome \
+  --skill play-my-chrome --global --agent codex --agent claude-code
 ```
 
 Use `--agent '*'` to install for every supported agent. If your installation path
-differs from `~/.agents/skills/puppeteer-my-chrome`, use that path below.
+differs from `~/.agents/skills/play-my-chrome`, use that path below.
 
 ## Connect
 
 1. Open your normal Chrome.
 2. Open `chrome://inspect/#remote-debugging` and enable remote debugging.
-3. Ask your agent to use `$puppeteer-my-chrome` for the browser task.
+3. Ask your agent to use `$play-my-chrome` for the browser task.
 4. Click **Allow** if Chrome requests a connection.
 
 The agent runs setup once to install the locked `puppeteer-core` dependency.
 That package does not download Chrome. To do setup yourself:
 
 ```bash
-~/.agents/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh setup
-~/.agents/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh connect
+~/.agents/skills/play-my-chrome/scripts/play-my-chrome.sh setup
+~/.agents/skills/play-my-chrome/scripts/play-my-chrome.sh connect
 ```
 
 Use `tab-new` for a new task tab, or `tab-list` and `tab-select <id>` for a tab
 already open. Run `--help` for the browser commands. The `run` command accepts a
 local module with a default async function that receives Puppeteer's `page`.
-See [the skill instructions](skills/puppeteer-my-chrome/SKILL.md) for an example.
+See [the skill instructions](skills/play-my-chrome/SKILL.md) for an example.
 
 Commands share one private connection. A Chrome restart or an explicit
 `disconnect` ends it. Reconnect and allow Chrome's dialog when necessary.
@@ -59,8 +58,8 @@ Tell the agent which profile to use, such as "Use my Work Chrome profile."
 The wrapper lists profile names and directory IDs:
 
 ```bash
-~/.agents/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh profile-list
-~/.agents/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh connect --profile "Work"
+~/.agents/skills/play-my-chrome/scripts/play-my-chrome.sh profile-list
+~/.agents/skills/play-my-chrome/scripts/play-my-chrome.sh connect --profile "Work"
 ```
 
 Use the directory ID, such as `Profile 1`, if names repeat. Without `--profile`,
@@ -82,7 +81,7 @@ limits access. These wrapper checks do not restrict the underlying debugging
 connection. A trusted `run` script can access Puppeteer's full browser API.
 
 ```bash
-~/.agents/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh disconnect
+~/.agents/skills/play-my-chrome/scripts/play-my-chrome.sh disconnect
 ```
 
 Disconnect leaves Chrome and all tabs open. `tab-close` closes only a tab the
@@ -104,12 +103,12 @@ Run the wrapper with `doctor` when setup or connection fails.
 | Unsafe directory or socket | Correct the path or ownership. Keep private permissions. |
 
 Setup requires a disconnected session. Locked packages install privately under
-`~/Library/Caches/puppeteer-my-chrome/cli` with `npm ci --ignore-scripts`.
+`~/Library/Caches/play-my-chrome/cli` with `npm ci --ignore-scripts`.
 Global Playwright and Puppeteer installations are not used or changed.
 
 ## Migration from Playwright
 
-Install this replacement skill and use `$puppeteer-my-chrome`. After verifying
+Install this replacement skill and use `$play-my-chrome`. After verifying
 it works, remove the old `playwright-my-chrome` skill from agent discovery.
 The new runtime never reads the old Keychain token or uses the Playwright
 Extension. Existing old credentials and old sessions remain under your control.

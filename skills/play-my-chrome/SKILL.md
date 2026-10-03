@@ -1,13 +1,13 @@
 ---
-name: puppeteer-my-chrome
+name: play-my-chrome
 description: Control the user's already-running, signed-in Google Chrome with Puppeteer and native remote debugging. Use when the user asks to inspect or operate a website in their existing Chrome session, with its current tabs and logins.
 ---
 
-# Puppeteer My Chrome
+# Play My Chrome
 
 Use the installed wrapper to connect to the user's running Chrome. Resolve
 `SKILL_ROOT` to the absolute directory that contains this file. Every command
-uses `"$SKILL_ROOT/scripts/puppeteer-my-chrome.sh"`.
+uses `"$SKILL_ROOT/scripts/play-my-chrome.sh"`.
 
 This skill requires macOS, Chrome 144 or newer, and Node.js 22.20 or newer.
 The agent must run as the same desktop user as Chrome. The wrapper installs
@@ -102,15 +102,15 @@ remote debugging startup flags, another profile, or another tool on failure.
 
 ## Private runtime
 
-The runtime defaults to `~/Library/Caches/puppeteer-my-chrome`. Its directory
+The runtime defaults to `~/Library/Caches/play-my-chrome`. Its directory
 must belong to the desktop user, have mode 0700, and be a real directory.
 A local Unix socket retains one shared connection across agents and repositories.
 Commands serialize through that connection. Concurrent agents still share tab
 selection, so finish a task's tab selection and action sequence before handing
 control to another agent.
 
-`PUPPETEER_MY_CHROME_NODE` selects a trusted Node executable by absolute path.
-`PUPPETEER_MY_CHROME_RUNTIME_DIR` selects a dedicated private runtime directory
+`PLAY_MY_CHROME_NODE` selects a trusted Node executable by absolute path.
+`PLAY_MY_CHROME_RUNTIME_DIR` selects a dedicated private runtime directory
 by absolute path. Agents that share a connection must use the same runtime path.
 An unsafe directory or socket fails closed. Correct its ownership or path;
 do not weaken the check. An interrupted setup can leave `operation.lock`.
@@ -118,7 +118,7 @@ Inspect the recorded PID and confirm the process ended before removing that lock
 
 ## Migration
 
-This skill replaces `playwright-my-chrome`. Use `$puppeteer-my-chrome` and this
+This skill replaces `playwright-my-chrome`. Use `$play-my-chrome` and this
 wrapper after installation. An old extension session, old cache, or old Keychain
 item is not used by the new runtime. Remove the old skill from discovery once
 this version works. Delete old credentials only if the user requests it.

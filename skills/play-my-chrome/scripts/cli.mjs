@@ -10,7 +10,7 @@ import {startSession, validateRequest} from './session.mjs';
 import {sendRequest, sessionStatus} from './transport.mjs';
 import {assertDefaultProfile, createProfileScope, listProfiles, profileArgument, selectProfile} from './profiles.mjs';
 
-const help = `Usage: puppeteer-my-chrome.sh <command> [arguments]
+const help = `Usage: play-my-chrome.sh <command> [arguments]
   setup                     Install locked Puppeteer, without downloading Chrome
   doctor                    Check installation, Chrome, and connection state
   profile-list              List profile names and directory IDs

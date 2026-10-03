@@ -50,21 +50,21 @@ jobs:
         run: |
           smoke_root="$(mktemp -d)"
           chmod 700 "$smoke_root"
-          export PUPPETEER_MY_CHROME_RUNTIME_DIR="$smoke_root/runtime"
-          export PUPPETEER_MY_CHROME_NODE="$(command -v node)"
-          wrapper="$GITHUB_WORKSPACE/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh"
+          export PLAY_MY_CHROME_RUNTIME_DIR="$smoke_root/runtime"
+          export PLAY_MY_CHROME_NODE="$(command -v node)"
+          wrapper="$GITHUB_WORKSPACE/skills/play-my-chrome/scripts/play-my-chrome.sh"
           "$wrapper" setup
           node --input-type=module -e '
             const {installedPuppeteer} = await import(process.argv[1]);
-            const puppeteer = installedPuppeteer(process.env.PUPPETEER_MY_CHROME_RUNTIME_DIR);
+            const puppeteer = installedPuppeteer(process.env.PLAY_MY_CHROME_RUNTIME_DIR);
             if (typeof puppeteer.connect !== "function") throw new Error("Puppeteer connect is missing");
-          ' "$GITHUB_WORKSPACE/skills/puppeteer-my-chrome/scripts/runtime.mjs"
+          ' "$GITHUB_WORKSPACE/skills/play-my-chrome/scripts/runtime.mjs"
 
       - name: Verify Vercel Skills discovery
         run: |
           output="$(node_modules/.bin/skills install . --list)"
           printf '%s\n' "$output"
-          grep -F "puppeteer-my-chrome" <<<"$output"
+          grep -F "play-my-chrome" <<<"$output"
 
       - name: Verify vendor, universal, and wildcard agent installation
         env:
@@ -78,35 +78,35 @@ jobs:
             "$install_root/wildcard"
           cd "$install_root/vendors"
           "$skills_cli" install "$SOURCE_REPOSITORY" \
-            --skill puppeteer-my-chrome \
+            --skill play-my-chrome \
             --agent codex \
             --agent claude-code \
             --copy \
             --yes
-          test -f .agents/skills/puppeteer-my-chrome/SKILL.md
-          test -f .claude/skills/puppeteer-my-chrome/SKILL.md
-          test -f .agents/skills/puppeteer-my-chrome/LICENSE
-          test -f .claude/skills/puppeteer-my-chrome/LICENSE
-          test -x .agents/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh
-          test -x .claude/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh
-          test -f .agents/skills/puppeteer-my-chrome/scripts/session.mjs
-          test -f .agents/skills/puppeteer-my-chrome/cli/package.json
-          test -f .claude/skills/puppeteer-my-chrome/cli/package-lock.json
+          test -f .agents/skills/play-my-chrome/SKILL.md
+          test -f .claude/skills/play-my-chrome/SKILL.md
+          test -f .agents/skills/play-my-chrome/LICENSE
+          test -f .claude/skills/play-my-chrome/LICENSE
+          test -x .agents/skills/play-my-chrome/scripts/play-my-chrome.sh
+          test -x .claude/skills/play-my-chrome/scripts/play-my-chrome.sh
+          test -f .agents/skills/play-my-chrome/scripts/session.mjs
+          test -f .agents/skills/play-my-chrome/cli/package.json
+          test -f .claude/skills/play-my-chrome/cli/package-lock.json
           cd "$install_root/universal"
           "$skills_cli" install "$SOURCE_REPOSITORY" \
-            --skill puppeteer-my-chrome \
+            --skill play-my-chrome \
             --agent universal \
             --copy \
             --yes
-          test -f .agents/skills/puppeteer-my-chrome/SKILL.md
-          test -f .agents/skills/puppeteer-my-chrome/LICENSE
-          test -x .agents/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh
+          test -f .agents/skills/play-my-chrome/SKILL.md
+          test -f .agents/skills/play-my-chrome/LICENSE
+          test -x .agents/skills/play-my-chrome/scripts/play-my-chrome.sh
           cd "$install_root/wildcard"
           "$skills_cli" install "$SOURCE_REPOSITORY" \
-            --skill puppeteer-my-chrome \
+            --skill play-my-chrome \
             --agent '*' \
             --copy \
             --yes
-          test -f .agents/skills/puppeteer-my-chrome/SKILL.md
-          test -f .agents/skills/puppeteer-my-chrome/LICENSE
-          test -x .agents/skills/puppeteer-my-chrome/scripts/puppeteer-my-chrome.sh
+          test -f .agents/skills/play-my-chrome/SKILL.md
+          test -f .agents/skills/play-my-chrome/LICENSE
+          test -x .agents/skills/play-my-chrome/scripts/play-my-chrome.sh

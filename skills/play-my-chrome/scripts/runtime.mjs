@@ -12,7 +12,7 @@ export const skillRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const shippedCli = join(skillRoot, 'cli');
 
 export function runtimeDirectory() {
-  const runtime = process.env.PUPPETEER_MY_CHROME_RUNTIME_DIR ?? join(homedir(), 'Library/Caches/puppeteer-my-chrome');
+  const runtime = process.env.PLAY_MY_CHROME_RUNTIME_DIR ?? join(homedir(), 'Library/Caches/play-my-chrome');
   if (!isAbsolute(runtime)) throw new SkillError('The runtime directory must be an absolute path.', 6);
   return resolve(runtime);
 }
@@ -31,14 +31,14 @@ export function prepareRuntime(runtime) {
   if (!lstatSync(runtime, {throwIfNoEntry: false})) mkdirSync(runtime, {mode: 0o700});
   assertPrivate(runtime, 'directory');
   if (Buffer.byteLength(join(runtime, 'session.sock')) > 100) {
-    throw new SkillError('The runtime path is too long for a local socket. Set PUPPETEER_MY_CHROME_RUNTIME_DIR to a shorter private absolute path.', 6);
+    throw new SkillError('The runtime path is too long for a local socket. Set PLAY_MY_CHROME_RUNTIME_DIR to a shorter private absolute path.', 6);
   }
   claimRuntime(runtime);
 }
 
 function claimRuntime(runtime) {
-  const marker = join(runtime, '.puppeteer-my-chrome-runtime');
-  const claim = 'puppeteer-my-chrome\n';
+  const marker = join(runtime, '.play-my-chrome-runtime');
+  const claim = 'play-my-chrome\n';
   const stat = lstatSync(marker, {throwIfNoEntry: false});
   if (!stat) {
     if (readdirSync(runtime).length) throw new SkillError('The runtime directory contains unrelated files. Choose a dedicated empty directory.', 6);

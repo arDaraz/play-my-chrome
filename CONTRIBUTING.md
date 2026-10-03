@@ -7,7 +7,7 @@ private local sockets without touching real Chrome profiles or credentials.
 ## Dependencies
 
 The skill's only direct runtime dependency is `puppeteer-core`, pinned in
-`skills/puppeteer-my-chrome/cli/package.json` and its lockfile. Regenerate the
+`skills/play-my-chrome/cli/package.json` and its lockfile. Regenerate the
 lock with npm after changing the exact version. Check native stable-channel
 connection discovery against the installed release before updating it.
 
@@ -23,7 +23,7 @@ manifest, and lockfile. CI runs these checks.
 Install a fresh copy from the task worktree before a manual browser check:
 
 ```bash
-npx skills install . --skill puppeteer-my-chrome --global \
+npx skills install . --skill play-my-chrome --global \
   --agent codex --agent claude-code --copy --yes
 ```
 

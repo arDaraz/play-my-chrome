@@ -7,13 +7,13 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {test} from 'node:test';
-import {createBrowserCommands, validateCommand} from '../skills/puppeteer-my-chrome/scripts/browser.mjs';
-import {chromePids, connectChrome, validateActivePort, validateChromeVersion} from '../skills/puppeteer-my-chrome/scripts/chrome.mjs';
-import {bounded, SkillError} from '../skills/puppeteer-my-chrome/scripts/errors.mjs';
-import {assertInstalled, assertPrivate, installPuppeteer, lockedVersion, prepareRuntime, releaseId, skillRoot, withRuntimeLock} from '../skills/puppeteer-my-chrome/scripts/runtime.mjs';
-import {startSession, validateRequest} from '../skills/puppeteer-my-chrome/scripts/session.mjs';
-import {requestLimit, sendRequest, sessionStatus, socketPath} from '../skills/puppeteer-my-chrome/scripts/transport.mjs';
-import {assertDefaultProfile, chromeDirectory, createProfileScope, parseProfiles, profileArgument, selectProfile, verifyConnectedProfile} from '../skills/puppeteer-my-chrome/scripts/profiles.mjs';
+import {createBrowserCommands, validateCommand} from '../skills/play-my-chrome/scripts/browser.mjs';
+import {chromePids, connectChrome, validateActivePort, validateChromeVersion} from '../skills/play-my-chrome/scripts/chrome.mjs';
+import {bounded, SkillError} from '../skills/play-my-chrome/scripts/errors.mjs';
+import {assertInstalled, assertPrivate, installPuppeteer, lockedVersion, prepareRuntime, releaseId, skillRoot, withRuntimeLock} from '../skills/play-my-chrome/scripts/runtime.mjs';
+import {startSession, validateRequest} from '../skills/play-my-chrome/scripts/session.mjs';
+import {requestLimit, sendRequest, sessionStatus, socketPath} from '../skills/play-my-chrome/scripts/transport.mjs';
+import {assertDefaultProfile, chromeDirectory, createProfileScope, parseProfiles, profileArgument, selectProfile, verifyConnectedProfile} from '../skills/play-my-chrome/scripts/profiles.mjs';
 
 function temporary(t) {
   const root = mkdtempSync('/tmp/pmc-test-');
@@ -554,13 +554,13 @@ test('malformed and oversized socket requests cannot execute page actions', asyn
 
 test('CLI help is available without setup and rejects unknown commands without browser access', t => {
   const runtime = temporary(t);
-  const cli = fileURLToPath(new URL('../skills/puppeteer-my-chrome/scripts/cli.mjs', import.meta.url));
-  const env = {...process.env, PUPPETEER_MY_CHROME_RUNTIME_DIR: runtime};
+  const cli = fileURLToPath(new URL('../skills/play-my-chrome/scripts/cli.mjs', import.meta.url));
+  const env = {...process.env, PLAY_MY_CHROME_RUNTIME_DIR: runtime};
   const help = execFileSync(process.execPath, [cli, '--help'], {encoding: 'utf8', env});
   assert.match(help, /needs no extension or token/);
   assert.equal(execFileSync(process.execPath, [cli, '--version'], {encoding: 'utf8', env}).trim(), lockedVersion());
   assert.throws(() => execFileSync(process.execPath, [cli, 'close-all'], {env, stdio: 'pipe'}));
-  assert.deepEqual(readdirSync(runtime), ['.puppeteer-my-chrome-runtime']);
+  assert.deepEqual(readdirSync(runtime), ['.play-my-chrome-runtime']);
 });
 
 test('deadline cleanup reports timeout and clears its timer on normal completion', async () => {

@@ -1,8 +1,8 @@
 # Repository instructions
 
-This repository publishes `skills/puppeteer-my-chrome`, a macOS Agent Skill
+This repository publishes `skills/play-my-chrome`, a macOS Agent Skill
 that controls an already-running signed-in Chrome through Puppeteer's native
-connection. The repository URL retains its former name.
+connection.
 
 ## Delivery
 
@@ -11,7 +11,7 @@ push to `main`. Keep implementation records outside this public repository.
 
 ## Runtime
 
-All shipped files live in the skill directory. `scripts/puppeteer-my-chrome.sh`
+All shipped files live in the skill directory. `scripts/play-my-chrome.sh`
 selects trusted Node and invokes `cli.mjs`. The local session keeps a Puppeteer
 connection alive through a private Unix socket. Only `connect` starts a daemon.
 The runtime installs locked `puppeteer-core` privately and does not download,

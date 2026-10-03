@@ -12,7 +12,7 @@ def fail(message: str) -> None:
 
 
 repo_root = Path(__file__).resolve().parents[1]
-skill_dir = repo_root / "skills" / "puppeteer-my-chrome"
+skill_dir = repo_root / "skills" / "play-my-chrome"
 skill_file = skill_dir / "SKILL.md"
 cli_manifest_file = skill_dir / "cli" / "package.json"
 cli_lock_file = skill_dir / "cli" / "package-lock.json"

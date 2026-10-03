@@ -54,7 +54,7 @@ debugging in Chrome to revoke new connections.
 ## Supported versions
 
 Security fixes ship for the latest release. The skill pins Puppeteer in
-`skills/puppeteer-my-chrome/cli/package-lock.json` and requires Chrome 144 or
+`skills/play-my-chrome/cli/package-lock.json` and requires Chrome 144 or
 newer. Puppeteer's stable-channel connection discovery is experimental, so each
 Puppeteer update must pass the connection and lifecycle checks before release.
 
