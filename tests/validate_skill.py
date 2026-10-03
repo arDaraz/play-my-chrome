@@ -12,7 +12,7 @@ def fail(message: str) -> None:
 
 
 repo_root = Path(__file__).resolve().parents[1]
-skill_dir = repo_root / "skills" / "playwright-my-chrome"
+skill_dir = repo_root / "skills" / "play-my-chrome"
 skill_file = skill_dir / "SKILL.md"
 cli_manifest_file = skill_dir / "cli" / "package.json"
 cli_lock_file = skill_dir / "cli" / "package-lock.json"
@@ -56,6 +56,8 @@ if not 1 <= len(description) <= 1024:
     fail("description must contain 1-1024 characters")
 
 for path in skill_dir.rglob("*"):
+    if "node_modules" in path.relative_to(skill_dir).parts:
+        continue
     if path.is_symlink():
         fail(f"skill contains a symlink: {path.relative_to(skill_dir)}")
     if path.is_file() and path.stat().st_size > 1_000_000:
@@ -63,12 +65,14 @@ for path in skill_dir.rglob("*"):
 
 for script in (skill_dir / "scripts").iterdir():
     if script.is_file():
-        if script.suffix != ".sh":
-            fail(f"executable scripts must use .sh so scanners detect them: {script.name}")
-        if not os.access(script, os.X_OK):
+        if script.suffix not in {".sh", ".mjs"}:
+            fail(f"unsupported script type: {script.name}")
+        if script.suffix == ".sh" and not os.access(script, os.X_OK):
             fail(f"script is not executable: {script.name}")
 
 for path in skill_dir.rglob("*"):
+    if "node_modules" in path.relative_to(skill_dir).parts:
+        continue
     if not path.is_file():
         continue
     content = path.read_text(encoding="utf-8")
@@ -85,16 +89,16 @@ if skill_license.read_bytes() != root_license.read_bytes():
 manifest = json.loads(cli_manifest_file.read_text(encoding="utf-8"))
 lock = json.loads(cli_lock_file.read_text(encoding="utf-8"))
 dependency_fields = [key for key in manifest if key.lower().endswith("dependencies")]
-if dependency_fields != ["dependencies"] or list(manifest["dependencies"]) != ["@playwright/cli"]:
-    fail("cli/package.json must declare @playwright/cli as its only dependency")
-supported_version = manifest["dependencies"]["@playwright/cli"]
+if dependency_fields != ["dependencies"] or list(manifest["dependencies"]) != ["puppeteer-core"]:
+    fail("cli/package.json must declare puppeteer-core as its only dependency")
+supported_version = manifest["dependencies"]["puppeteer-core"]
 if not re.fullmatch(r"\d+\.\d+\.\d+", supported_version):
-    fail(f"cli/package.json must pin an exact @playwright/cli version, not {supported_version!r}")
+    fail(f"cli/package.json must pin an exact puppeteer-core version, not {supported_version!r}")
 if not re.fullmatch(r">=\d+\.\d+\.\d+", manifest.get("engines", {}).get("node", "")):
     fail("cli/package.json must set engines.node as >=MAJOR.MINOR.PATCH for the wrapper to read")
-locked_version = lock.get("packages", {}).get("node_modules/@playwright/cli", {}).get("version")
+locked_version = lock.get("packages", {}).get("node_modules/puppeteer-core", {}).get("version")
 if locked_version != supported_version:
-    fail(f"cli/package-lock.json locks @playwright/cli {locked_version}, not {supported_version}")
+    fail(f"cli/package-lock.json locks puppeteer-core {locked_version}, not {supported_version}")
 
 for path in repo_root.rglob("*"):
     if not path.is_file():
@@ -112,6 +116,13 @@ for path in repo_root.rglob("*"):
         and relative.parts[0] != "docs"
         and path.parent != cli_manifest_file.parent
     ):
-        fail(f"{relative} spells the CLI version; read it from cli/package-lock.json instead")
+        fail(f"{relative} spells the Puppeteer version; read it from cli/package-lock.json instead")
+
+for path in (skill_dir / "scripts").glob("*"):
+    content = path.read_text(encoding="utf-8")
+    if re.search(r"\b(?:puppeteer|browser)\.launch\s*\(|browser\.close\s*\(", content):
+        fail(f"browser launch or shutdown found in {path.name}")
+    if "PLAYWRIGHT" in content or "Keychain" in content or "pbpaste" in content:
+        fail(f"obsolete extension runtime found in {path.name}")
 
 print("Agent Skill validation passed.")

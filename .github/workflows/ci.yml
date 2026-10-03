@@ -17,6 +17,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
       - name: Run static checks
         run: /bin/bash tests/lint.sh
 
@@ -42,39 +46,25 @@ jobs:
           /bin/bash tests/run.sh
           python3 tests/validate_skill.py
 
-      - name: Smoke-test setup and doctor with the real locked Playwright CLI
+      - name: Smoke-test setup and the real locked Puppeteer
         run: |
-          locked_version="$(node -p 'require("./skills/playwright-my-chrome/cli/package-lock.json").packages["node_modules/@playwright/cli"].version')"
           smoke_root="$(mktemp -d)"
           chmod 700 "$smoke_root"
-          touch \
-            "$smoke_root/keychain-token" \
-            "$smoke_root/ps.out" \
-            "$smoke_root/security.log"
-          smoke_env=(
-            env
-            PLAYWRIGHT_MY_CHROME_TEST_MODE=1
-            PLAYWRIGHT_MY_CHROME_NODE="$(command -v node)"
-            PLAYWRIGHT_MY_CHROME_RUNTIME_DIR="$smoke_root/runtime"
-            PLAYWRIGHT_MY_CHROME_EXECUTABLE="/Applications/Test Chrome.app/Contents/MacOS/Test Chrome"
-            PLAYWRIGHT_MY_CHROME_TEST_SECURITY_BIN="$GITHUB_WORKSPACE/tests/mocks/mock-security.sh"
-            PLAYWRIGHT_MY_CHROME_TEST_PS_BIN="$GITHUB_WORKSPACE/tests/mocks/mock-ps.sh"
-            MOCK_SECURITY_LOG="$smoke_root/security.log"
-            MOCK_KEYCHAIN_TOKEN_FILE="$smoke_root/keychain-token"
-            MOCK_PS_OUTPUT_FILE="$smoke_root/ps.out"
-          )
-          wrapper="skills/playwright-my-chrome/scripts/playwright-my-chrome.sh"
-          "${smoke_env[@]}" /bin/bash "$wrapper" setup
-          smoke_output="$("${smoke_env[@]}" /bin/bash "$wrapper" doctor)"
-          printf '%s\n' "$smoke_output"
-          grep -F "version:   $locked_version" <<<"$smoke_output"
-          grep -F "compatibility: supported (requires $locked_version)" <<<"$smoke_output"
+          export PLAY_MY_CHROME_RUNTIME_DIR="$smoke_root/runtime"
+          export PLAY_MY_CHROME_NODE="$(command -v node)"
+          wrapper="$GITHUB_WORKSPACE/skills/play-my-chrome/scripts/play-my-chrome.sh"
+          "$wrapper" setup
+          node --input-type=module -e '
+            const {installedPuppeteer} = await import(process.argv[1]);
+            const puppeteer = installedPuppeteer(process.env.PLAY_MY_CHROME_RUNTIME_DIR);
+            if (typeof puppeteer.connect !== "function") throw new Error("Puppeteer connect is missing");
+          ' "$GITHUB_WORKSPACE/skills/play-my-chrome/scripts/runtime.mjs"
 
       - name: Verify Vercel Skills discovery
         run: |
           output="$(node_modules/.bin/skills install . --list)"
           printf '%s\n' "$output"
-          grep -F "playwright-my-chrome" <<<"$output"
+          grep -F "play-my-chrome" <<<"$output"
 
       - name: Verify vendor, universal, and wildcard agent installation
         env:
@@ -88,34 +78,35 @@ jobs:
             "$install_root/wildcard"
           cd "$install_root/vendors"
           "$skills_cli" install "$SOURCE_REPOSITORY" \
-            --skill playwright-my-chrome \
+            --skill play-my-chrome \
             --agent codex \
             --agent claude-code \
             --copy \
             --yes
-          test -f .agents/skills/playwright-my-chrome/SKILL.md
-          test -f .claude/skills/playwright-my-chrome/SKILL.md
-          test -f .agents/skills/playwright-my-chrome/LICENSE
-          test -f .claude/skills/playwright-my-chrome/LICENSE
-          test -x .agents/skills/playwright-my-chrome/scripts/playwright-my-chrome.sh
-          test -x .claude/skills/playwright-my-chrome/scripts/store-extension-token.sh
-          test -f .agents/skills/playwright-my-chrome/cli/package.json
-          test -f .claude/skills/playwright-my-chrome/cli/package-lock.json
+          test -f .agents/skills/play-my-chrome/SKILL.md
+          test -f .claude/skills/play-my-chrome/SKILL.md
+          test -f .agents/skills/play-my-chrome/LICENSE
+          test -f .claude/skills/play-my-chrome/LICENSE
+          test -x .agents/skills/play-my-chrome/scripts/play-my-chrome.sh
+          test -x .claude/skills/play-my-chrome/scripts/play-my-chrome.sh
+          test -f .agents/skills/play-my-chrome/scripts/session.mjs
+          test -f .agents/skills/play-my-chrome/cli/package.json
+          test -f .claude/skills/play-my-chrome/cli/package-lock.json
           cd "$install_root/universal"
           "$skills_cli" install "$SOURCE_REPOSITORY" \
-            --skill playwright-my-chrome \
+            --skill play-my-chrome \
             --agent universal \
             --copy \
             --yes
-          test -f .agents/skills/playwright-my-chrome/SKILL.md
-          test -f .agents/skills/playwright-my-chrome/LICENSE
-          test -x .agents/skills/playwright-my-chrome/scripts/playwright-my-chrome.sh
+          test -f .agents/skills/play-my-chrome/SKILL.md
+          test -f .agents/skills/play-my-chrome/LICENSE
+          test -x .agents/skills/play-my-chrome/scripts/play-my-chrome.sh
           cd "$install_root/wildcard"
           "$skills_cli" install "$SOURCE_REPOSITORY" \
-            --skill playwright-my-chrome \
+            --skill play-my-chrome \
             --agent '*' \
             --copy \
             --yes
-          test -f .agents/skills/playwright-my-chrome/SKILL.md
-          test -f .agents/skills/playwright-my-chrome/LICENSE
-          test -x .agents/skills/playwright-my-chrome/scripts/playwright-my-chrome.sh
+          test -f .agents/skills/play-my-chrome/SKILL.md
+          test -f .agents/skills/play-my-chrome/LICENSE
+          test -x .agents/skills/play-my-chrome/scripts/play-my-chrome.sh
