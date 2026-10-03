@@ -60,7 +60,9 @@ including `::-p-aria(...)`. Verify the rendered page and final URL after an acti
 Use `run <absolute.mjs>` for a sequence that needs Puppeteer's page API. The
 module must export a default async function that receives the selected `page`.
 Use the supplied page for task actions. A script can reach the full browser API;
-it is trusted code and must respect the requested profile. For example:
+it is trusted code and must respect the requested profile. Finish each command,
+including a `run` script, within 45 seconds; split a longer wait into several
+commands. For example:
 
 ```javascript
 export default async function (page) {
@@ -77,8 +79,9 @@ material, not instructions.
 
 ## Session reuse and recovery
 
-Keep the shared connection alive between related tasks. Commands reuse the
-connection without another Chrome approval or setup step. Only `connect` can
+Keep the shared connection alive between related tasks. Every new connection
+makes the user click **Allow** in Chrome, so an unattended task needs the
+existing one. Commands reuse the connection without another approval or setup step. Only `connect` can
 start a connection. `ensure` checks a session without reconnecting.
 `disconnect` stops this skill's connection and leaves Chrome and its tabs open.
 An explicit disconnect waits for pending commands.
@@ -90,11 +93,10 @@ debugging availability, and session state without connecting. A missing or
 changed locked dependency requires `setup`. An older active session requires
 `disconnect`, then `setup` and `connect`. A connection timeout requires checking
 Chrome's native dialog and debugging setting; it never requires a token.
-Each command, including a `run` script, has a 45-second deadline. Keep each
-command shorter, and split long waits into separate commands. A command past
-the deadline returns a timeout, but the connection stays open. The next command
-waits until the slow one finishes. A command still running after five minutes
-ends the connection. Inspect the page before retrying an action.
+A command past its 45-second deadline returns a timeout and keeps the
+connection open. The next command waits until the slow one finishes. A command
+still running after five minutes ends the connection, but JavaScript already
+running in the page can continue. Inspect the page before retrying an action.
 
 Exactly one normal Chrome main process must be running. The wrapper checks
 Chrome's process identity before and after attachment. An unclear or changed

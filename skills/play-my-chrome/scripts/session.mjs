@@ -45,7 +45,7 @@ class ChromeSession {
     this.connectTimeout = connectTimeout;
     this.commandTimeout = commandTimeout;
     this.stuckTimeout = stuckTimeout;
-    this.timeoutMessage = `The command exceeded ${commandTimeout / 1000} seconds. The connection stays open; the next command waits until this one finishes.`;
+    this.stopped = new Promise(resolve => { this.markStopped = resolve; });
     this.server = createServer(socket => receiveRequest(socket, (request, isActive) => this.dispatch(request, isActive)));
   }
 
@@ -79,7 +79,7 @@ class ChromeSession {
 
   stop() {
     this.state = 'disconnected';
-    this.endStuckWait?.();
+    this.markStopped();
     this.stopping ??= Promise.resolve().then(async () => {
       try {
         await this.detachBrowser();
@@ -98,10 +98,15 @@ class ChromeSession {
   }
 
   async start(request) {
-    if (request.command === 'disconnect') return {running: this.disconnect()};
+    if (request.command === 'disconnect') {
+      const running = this.disconnect();
+      return {running, reply: running};
+    }
     await this.ready;
     if (this.state !== 'ready' || !this.browser.connected) throw new SkillError('The Chrome session disconnected. Run connect.', 4);
-    return {running: this.executeCommand(request)};
+    const running = this.executeCommand(request);
+    const message = `The command exceeded ${this.commandTimeout / 1000} seconds. The connection stays open; the next command waits until this one finishes.`;
+    return {running, reply: bounded(running, this.commandTimeout, message)};
   }
 
   async disconnect() {
@@ -110,19 +115,9 @@ class ChromeSession {
     return {state: 'disconnected'};
   }
 
-  async settle(running) {
-    if (this.state === 'disconnected') return;
-    let timer;
-    const limit = new Promise(resolve => {
-      timer = setTimeout(resolve, this.stuckTimeout, 'stuck');
-      this.endStuckWait = () => resolve('stopped');
-    });
-    const finished = running.then(() => 'finished', () => 'finished');
-    try {
-      if (await Promise.race([finished, limit]) === 'stuck') this.stopInBackground();
-    } finally {
-      clearTimeout(timer);
-    }
+  settle(running) {
+    const finished = running.then(() => {}, () => {});
+    return bounded(Promise.race([finished, this.stopped]), this.stuckTimeout).catch(() => this.stopInBackground());
   }
 
   async executeCommand(request) {
@@ -140,7 +135,7 @@ class ChromeSession {
     });
     // A timed-out command still holds the queue until it settles, so page actions never overlap.
     this.queue = started.then(({running}) => this.settle(running), () => {});
-    return started.then(({running}) => request.command === 'disconnect' ? running : bounded(running, this.commandTimeout, this.timeoutMessage));
+    return started.then(({reply}) => reply);
   }
 
   status() { return {state: this.state, release: this.release, profile: this.profile}; }

@@ -7,7 +7,7 @@ import {chromePreflight, connectChrome} from './chrome.mjs';
 import {bounded, SkillError} from './errors.mjs';
 import {assertInstalled, installedPuppeteer, installPuppeteer, lockedVersion, prepareRuntime, releaseId, runtimeDirectory, withRuntimeLock} from './runtime.mjs';
 import {startSession, validateRequest} from './session.mjs';
-import {sendRequest, sessionStatus} from './transport.mjs';
+import {commandTimeout, sendRequest, sessionStatus} from './transport.mjs';
 import {assertDefaultProfile, createProfileScope, listProfiles, profileArgument, selectProfile} from './profiles.mjs';
 
 const help = `Usage: play-my-chrome.sh <command> [arguments]
@@ -30,7 +30,7 @@ const help = `Usage: play-my-chrome.sh <command> [arguments]
   run <absolute.mjs>        Run an exported async function(page) with Puppeteer
   screenshot <absolute>     Save the selected tab's screenshot
   --version                 Print the locked Puppeteer version
-Each command has a 45-second deadline; a timeout keeps the connection open.
+Each command has a ${commandTimeout / 1000}-second deadline; a timeout keeps the connection open.
 Native debugging: enable chrome://inspect/#remote-debugging in Chrome 144+.
 The skill never launches Chrome and needs no extension or token.`;
 

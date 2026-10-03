@@ -33,8 +33,8 @@ page or local script code. They are not a sandbox for untrusted code.
 - `tab-close` refuses to close an existing user tab.
 - Attachment and page operations have deadlines. A command past its deadline
   reports a timeout and blocks further commands until it finishes. A command
-  still running after five minutes ends the connection. Inspect page state
-  before retrying an action.
+  still running after five minutes ends the connection. JavaScript already
+  running in the page can continue. Inspect page state before retrying an action.
 - Setup uses exact, integrity-locked `puppeteer-core` dependencies and disables
   npm package scripts. It refuses while a session exists.
 - The runtime checks the shipped lock and every installed dependency version
