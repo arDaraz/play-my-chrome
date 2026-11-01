@@ -8,8 +8,8 @@ private local sockets without touching real Chrome profiles or credentials.
 
 The skill's only direct runtime dependency is `puppeteer-core`, pinned in
 `skills/play-my-chrome/cli/package.json` and its lockfile. Regenerate the
-lock with npm after changing the exact version. Check native stable-channel
-connection discovery against the installed release before updating it.
+lock with npm after changing the exact version. Check the pipe launch against
+the installed Chrome before updating it.
 
 ## Installation checks
 
@@ -27,14 +27,16 @@ npx skills install . --skill play-my-chrome --global \
   --agent codex --agent claude-code --copy --yes
 ```
 
-Run the installed wrapper's `setup` and `doctor`. Enable Chrome's native remote
-debugging setting, run `connect`, and allow the Chrome dialog. Create a task tab,
-read its rendered content, and disconnect. Confirm Chrome and existing tabs
-remain open. Report unavailable debugging or denied approval as a pending check.
+Set `PLAY_MY_CHROME_PROFILE_DIR` to a temporary private directory, so the check
+leaves your real private profile alone. Run the installed wrapper's `setup` and
+`doctor`. Run `connect`, create a task tab, read its rendered content, and
+disconnect. Confirm that no Chrome process uses the profile after disconnect.
+Run `login`, confirm `connect` refuses while that window is open, and quit it.
+Report a missing Chrome or an unfinished sign-in as a pending check.
 
 ## Changes
 
 Add a regression test for every changed safeguard and bug fix. Keep the existing
-browser, profile, and disconnect-only contracts. Describe changed user behavior
+private profile, pipe launch, and session contracts. Describe changed user behavior
 and access limits in the pull request. Report security-sensitive findings
 through [SECURITY.md](SECURITY.md).

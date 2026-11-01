@@ -1,19 +1,20 @@
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
+import {execFile, execFileSync} from 'node:child_process';
 import {EventEmitter} from 'node:events';
 import {chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync} from 'node:fs';
 import {createConnection} from 'node:net';
+import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {test} from 'node:test';
+import {promisify} from 'node:util';
 import {createBrowserCommands, validateCommand} from '../skills/play-my-chrome/scripts/browser.mjs';
-import {chromePids, connectChrome, validateActivePort, validateChromeVersion} from '../skills/play-my-chrome/scripts/chrome.mjs';
-import {bounded, SkillError} from '../skills/play-my-chrome/scripts/errors.mjs';
+import {assertProfileIdle, chromeArguments, executable, launchChrome, loginUrl, openLoginWindow, prepareProfile, profilePids} from '../skills/play-my-chrome/scripts/chrome.mjs';
+import {bounded} from '../skills/play-my-chrome/scripts/errors.mjs';
 import {assertInstalled, assertPrivate, installPuppeteer, lockedVersion, prepareRuntime, releaseId, skillRoot, withRuntimeLock} from '../skills/play-my-chrome/scripts/runtime.mjs';
 import {startSession, validateRequest} from '../skills/play-my-chrome/scripts/session.mjs';
 import {requestLimit, sendRequest, sessionStatus, socketPath} from '../skills/play-my-chrome/scripts/transport.mjs';
-import {assertDefaultProfile, chromeDirectory, createProfileScope, parseProfiles, profileArgument, selectProfile, verifyConnectedProfile} from '../skills/play-my-chrome/scripts/profiles.mjs';
 
 function temporary(t) {
   const root = mkdtempSync('/tmp/pmc-test-');
@@ -24,14 +25,12 @@ function temporary(t) {
 
 function fakePage(url = 'https://example.test/existing') {
   const page = {
-    closed: false, currentUrl: url, actions: [], contextId: 'work-context',
+    closed: false, currentUrl: url, actions: [],
     isClosed: () => page.closed, url: () => page.currentUrl, title: async () => 'Example',
     setDefaultTimeout: timeout => page.actions.push(['timeout', timeout]),
     setDefaultNavigationTimeout: timeout => page.actions.push(['navigation-timeout', timeout]),
     goto: async destination => { page.currentUrl = destination; page.actions.push(['goto', destination]); },
     close: async () => { page.closed = true; page.actions.push(['close']); },
-    $eval: async () => join(chromeDirectory, 'Profile 1'),
-    createCDPSession: async () => ({send: async () => ({targetInfo: {browserContextId: page.contextId}}), detach: async () => {}}),
     accessibility: {snapshot: async () => ({role: 'RootWebArea', name: 'Example'})},
     locator: selector => ({
       click: async () => page.actions.push(['click', selector]),
@@ -47,15 +46,14 @@ function fakePage(url = 'https://example.test/existing') {
 function fakeBrowser() {
   const browser = new EventEmitter();
   browser.connected = true;
-  browser.defaultContextId = 'work-context';
-  browser.target = () => ({createCDPSession: async () => ({send: async () => ({defaultBrowserContextId: browser.defaultContextId}), detach: async () => {}})});
   browser.original = fakePage();
   browser.tabPages = [browser.original];
   browser.pages = async () => browser.tabPages.filter(page => !page.closed);
   browser.newPage = async () => { const page = fakePage('about:blank'); browser.tabPages.push(page); return page; };
-  browser.disconnectCount = 0;
-  browser.disconnect = async () => { browser.connected = false; browser.disconnectCount++; browser.emit('disconnected'); };
-  browser.close = () => { throw new Error('Chrome must never close'); };
+  browser.closeCount = 0;
+  browser.exit = () => { browser.connected = false; browser.emit('disconnected'); };
+  browser.close = async () => { browser.closeCount++; browser.exit(); };
+  browser.disconnect = () => { throw new Error('A launched Chrome must close, not detach'); };
   return browser;
 }
 
@@ -84,170 +82,64 @@ function installedFixture(runtime) {
   return cli;
 }
 
-test('Chrome process parsing excludes helpers and other automation browsers', () => {
-  const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-  assert.deepEqual(chromePids(''), []);
-  assert.deepEqual(chromePids(` 42 ${chrome}\n 55 ${chrome} Helper\n 60 /tmp/chrome\n`), ['42']);
-  assert.deepEqual(chromePids(`42 ${chrome}\n52 ${chrome}`), ['42', '52']);
-  assert.deepEqual(chromePids(`42 ${chrome} --profile-directory=Default\n52 ${chrome} --user-data-dir=/tmp/automation\n53 ${chrome} --type=renderer\n54 ${chrome} --remote-debugging-port=9222`), ['42']);
-});
-
-test('Chrome version and native endpoint boundaries fail closed', () => {
-  for (const version of ['143.0.1.2', 'unknown', '144', '', '144.0.1.2junk']) assert.throws(() => validateChromeVersion(version));
-  validateChromeVersion('144.0.1.2');
-  validateChromeVersion('154.0.8037.95');
-  for (const port of ['0', '65536', '42evil', '-1', '', '1.5']) assert.throws(() => validateActivePort(`${port}\n/devtools/browser/abc`));
-  for (const path of ['https://remote.test', '/devtools/page/abc', '/devtools/browser/abc?secret=foo', '//remote.test']) assert.throws(() => validateActivePort(`9222\n${path}`));
-  assert.throws(() => validateActivePort('9222\n/devtools/browser/abc\nextra'));
-  validateActivePort('1\n/devtools/browser/a\n');
-  validateActivePort('65535\n/devtools/browser/abc-123\n');
-  validateActivePort('9222\r\n/devtools/browser\r\n');
-});
-
-test('missing or ambiguous Chrome stops before any Puppeteer call', async () => {
-  let connections = 0;
-  const puppeteer = {connect: async () => { connections++; }};
-  for (const reason of ['missing', 'ambiguous']) {
-    await assert.rejects(connectChrome(puppeteer, () => { throw new SkillError(reason, 5); }), {exitCode: 5});
-  }
-  assert.equal(connections, 0);
-});
-
-test('native connection uses stable discovery without a launch, extension, or credential', async () => {
+test('Chrome launches on the private profile over a pipe with no default automation flags', async () => {
   const browser = fakeBrowser();
-  let connectionOptions;
-  const attached = await connectChrome({connect: async options => { connectionOptions = options; return browser; }}, () => ({pids: ['42']}), () => ['42']);
-  assert.equal(attached, browser);
-  assert.deepEqual(connectionOptions, {channel: 'chrome', defaultViewport: null, protocolTimeout: 15000, wsOptions: {handshakeTimeout: 50000}});
-  assert.equal(browser.original.actions.length, 0);
-  assert.equal(browser.tabPages.length, 1);
+  let options;
+  const launched = await launchChrome({launch: async launchOptions => { options = launchOptions; return browser; }}, '/tmp/pmc profile');
+  assert.equal(launched, browser);
+  assert.equal(options.executablePath, executable);
+  assert.equal(options.pipe, true);
+  assert.equal(options.ignoreDefaultArgs, true);
+  assert.deepEqual(options.args.slice(0, 3), chromeArguments('/tmp/pmc profile'));
+  assert.ok(options.args.includes('--headless=new'));
+  assert.equal(options.args.some(arg => /remote-debugging-port|enable-automation|use-mock-keychain|password-store/.test(arg)), false);
+  assert.equal(options.handleSIGTERM, false);
 });
 
-test('changed Chrome or failed process inspection disconnects before any page action', async () => {
-  for (const inspect of [() => ['43'], () => ['42', '43'], () => { throw new Error('ps failed'); }]) {
-    const browser = fakeBrowser();
-    await assert.rejects(connectChrome({connect: async () => browser}, () => ({pids: ['42']}), inspect));
-    assert.equal(browser.disconnectCount, 1);
-    assert.equal(browser.original.closed, false);
-    assert.equal(browser.original.actions.length, 0);
-  }
+test('the login window shares the session profile flags and has no debugging channel', () => {
+  let call;
+  const result = openLoginWindow('/tmp/pmc profile', 'https://example.test/sign-in', (...args) => {
+    call = args;
+    return {pid: 42, unref: () => { call.push('unref'); }};
+  });
+  assert.deepEqual(result, {state: 'login-open', pid: 42, profile: '/tmp/pmc profile'});
+  assert.equal(call[0], executable);
+  assert.deepEqual(call[1], [...chromeArguments('/tmp/pmc profile'), 'https://example.test/sign-in']);
+  assert.equal(call[1].some(arg => arg.includes('remote-debugging') || arg.includes('headless')), false);
+  assert.deepEqual(call[2], {detached: true, stdio: 'ignore'});
+  assert.equal(call.at(-1), 'unref');
+  assert.equal(loginUrl([]), undefined);
+  assert.equal(loginUrl(['https://example.test']), 'https://example.test/');
+  for (const args of [['file:///etc/passwd'], ['javascript:alert(1)'], ['example.test'], ['https://a.test', 'extra']]) assert.throws(() => loginUrl(args));
 });
 
-test('native connection refusal is reported without retry or fallback', async () => {
-  let attempts = 0;
-  await assert.rejects(connectChrome({connect: async () => { attempts++; throw new Error('Chrome refused'); }}, () => ({pids: ['42']})), /Chrome refused/);
-  assert.equal(attempts, 1);
+test('a Chrome process on the private profile blocks launch and login', () => {
+  const profile = '/tmp/pmc profile';
+  const main = `42 ${executable} --user-data-dir=${profile} --no-first-run`;
+  assert.deepEqual(profilePids(main, profile), ['42']);
+  assert.deepEqual(profilePids(`${main}\n43 ${executable} --type=renderer --user-data-dir=${profile}`, profile), ['42']);
+  assert.deepEqual(profilePids(`44 ${executable}\n45 ${executable} --user-data-dir=/tmp/other\n46 /tmp/chrome --user-data-dir=${profile}`, profile), []);
+  assert.deepEqual(profilePids(`47 ${executable} --user-data-dir=${profile}`, profile), ['47']);
+  assert.throws(() => assertProfileIdle(profile, main), {exitCode: 5});
+  assertProfileIdle(profile, `44 ${executable}`);
 });
 
-test('profiles expose names and IDs without account metadata and reject unknown or duplicate names', () => {
-  const profiles = parseProfiles(JSON.stringify({profile: {last_used: 'Profile 1', info_cache: {
-    Default: {name: 'Private', user_name: 'secret@example.test'},
-    'Profile 1': {name: 'Work'}, 'Profile 2': {name: 'Work'},
-    'System Profile': {name: 'System'}, '../outside': {name: 'Invalid'},
-  }}}));
-  assert.equal(profiles.length, 3);
-  assert.equal(JSON.stringify(profiles).includes('secret'), false);
-  assert.equal(selectProfile(undefined, profiles).directory, 'Profile 1');
-  assert.equal(selectProfile('private', profiles).directory, 'Default');
-  assert.equal(selectProfile('Profile 2', profiles).directory, 'Profile 2');
-  for (const selector of ['Work', 'unknown', '../outside', '']) assert.throws(() => selectProfile(selector, profiles), {exitCode: 5});
-  assert.throws(() => selectProfile(undefined, []), {exitCode: 5});
-  assertDefaultProfile(profiles[1], profiles);
-  assert.throws(() => assertDefaultProfile(profiles[0], profiles), {exitCode: 5});
-  assert.equal(profileArgument([]), undefined);
-  assert.equal(profileArgument(['--profile', 'Work']), 'Work');
-  for (const args of [['Work'], ['--profile'], ['--profile', ''], ['--profile', 'Work', 'extra']]) assert.throws(() => profileArgument(args));
-  for (const contents of ['null', '{}', '{"profile":{"info_cache":[]}}', 'private-account-metadata']) {
-    assert.throws(() => parseProfiles(contents), error => error.exitCode === 5 && !error.message.includes('private-account-metadata'));
-  }
-  assert.deepEqual(parseProfiles('{"profile":{"info_cache":{"Default":null}}}'), []);
-});
-
-test('profile verification closes only its probe and rejects another profile or failed navigation', async () => {
-  for (const scenario of ['match', 'mismatch', 'navigation-failure']) {
-    const browser = fakeBrowser();
-    const probe = fakePage();
-    browser.newPage = async () => probe;
-    probe.$eval = async () => join(chromeDirectory, scenario === 'match' ? 'Profile 1' : 'Default');
-    if (scenario === 'navigation-failure') probe.goto = async () => { throw new Error('navigation failed'); };
-    const verification = verifyConnectedProfile(browser, {directory: 'Profile 1'});
-    if (scenario === 'match') await verification;
-    else await assert.rejects(verification);
-    assert.equal(probe.closed, true);
-    assert.equal(browser.original.actions.length, 0);
-    assert.equal(browser.original.closed, false);
-  }
-});
-
-test('a profile mismatch after connecting disconnects before task commands', async t => {
-  const browser = fakeBrowser();
-  const probe = fakePage();
-  probe.$eval = async () => join(chromeDirectory, 'Default');
-  browser.newPage = async () => probe;
-  const runtime = temporary(t);
-  const session = await startSession({runtime, release: 'test-release', connectBrowser: async () => browser,
-    bindProfile: connected => createProfileScope(connected, {directory: 'Profile 1'})});
-  await assert.rejects(session.ready, {exitCode: 5});
-  await session.stop();
-  assert.equal(browser.disconnectCount, 1);
-  assert.equal(probe.closed, true);
-  assert.equal(browser.original.actions.length, 0);
-});
-
-test('a profile change blocks further page actions but still allows disconnect', async t => {
-  let changed = false;
-  const profile = {directory: 'Profile 1', name: 'Work'};
-  const {runtime, browser, session} = await sessionFixture(t, {profile, checkProfile: () => {
-    if (changed) throw new SkillError('profile changed', 5);
-  }});
-  await session.ready;
-  assert.deepEqual((await sendRequest(runtime, {command: 'ensure', args: []})).profile, profile);
-  changed = true;
-  await assert.rejects(sendRequest(runtime, {command: 'tab-new', args: []}), {exitCode: 5});
-  assert.equal(browser.tabPages.length, 1);
-  await sendRequest(runtime, {command: 'disconnect', args: []});
-  await session.stop();
-  assert.equal(browser.original.closed, false);
-});
-
-test('native context checks exclude other profiles and stop after a default context change', async () => {
-  const browser = fakeBrowser();
-  const personal = fakePage('https://example.test/private');
-  personal.contextId = 'private-context';
-  browser.tabPages.push(personal);
-  const scope = await createProfileScope(browser, {directory: 'Profile 1'});
-  const commands = createBrowserCommands(browser, scope);
-  const tabs = await commands('tab-list', []);
-  assert.equal(tabs.length, 1);
-  assert.equal(personal.actions.length, 0);
-  await scope.check();
-  await commands('tab-select', [tabs[0].id]);
-  browser.original.contextId = 'private-context';
-  await assert.rejects(commands('click', ['button']), {exitCode: 5});
-  assert.equal(browser.original.actions.some(action => action[0] === 'click'), false);
-  browser.defaultContextId = 'private-context';
-  await assert.rejects(scope.check(), {exitCode: 5});
-  browser.newPage = async () => personal;
-  await assert.rejects(commands('tab-new', ['https://example.test/task']), {exitCode: 5});
-  assert.equal(personal.closed, true);
-  assert.equal(personal.actions.some(action => action[0] === 'goto'), false);
-});
-
-test('profile binding uses tab contexts on Chrome 144 and rejects missing or mismatched identities', async () => {
-  const olderBrowser = fakeBrowser();
-  olderBrowser.defaultContextId = undefined;
-  const scope = await createProfileScope(olderBrowser, {directory: 'Profile 1'});
-  await scope.check();
-  await scope.assertPage(olderBrowser.original);
-  const changedBrowser = fakeBrowser();
-  changedBrowser.defaultContextId = 'another-context';
-  await assert.rejects(createProfileScope(changedBrowser, {directory: 'Profile 1'}), {exitCode: 5});
-  const unidentified = fakeBrowser();
-  const probe = fakePage();
-  probe.contextId = undefined;
-  unidentified.newPage = async () => probe;
-  await assert.rejects(createProfileScope(unidentified, {directory: 'Profile 1'}), {exitCode: 5});
-  assert.equal(probe.closed, true);
+test('the private profile directory is claimed, private, and never the normal Chrome directory', t => {
+  const root = temporary(t);
+  const profile = join(root, 'profile');
+  prepareProfile(profile);
+  prepareProfile(profile);
+  assert.equal(lstatSync(profile).mode & 0o777, 0o700);
+  assert.deepEqual(readdirSync(profile), ['.play-my-chrome-profile']);
+  const unrelated = join(root, 'unrelated');
+  mkdirSync(unrelated, {mode: 0o700});
+  writeFileSync(join(unrelated, 'Local State'), '{}');
+  assert.throws(() => prepareProfile(unrelated), {exitCode: 6});
+  const link = join(root, 'link');
+  symlinkSync(profile, link);
+  assert.throws(() => prepareProfile(link), {exitCode: 6});
+  const chromeDirectory = join(homedir(), 'Library/Application Support/Google/Chrome');
+  for (const path of [chromeDirectory, join(chromeDirectory, 'Default')]) assert.throws(() => prepareProfile(path), {exitCode: 6});
 });
 
 test('private runtime and socket paths reject unsafe ownership types and permissions', t => {
@@ -339,7 +231,7 @@ test('tab IDs are stable and page actions require an explicit selected tab', asy
   await assert.rejects(async () => commands('snapshot', []), /Select an open tab/);
 });
 
-test('closing a task tab preserves existing user tabs and creates no browser process', async () => {
+test('tab-close closes only a tab created during this connection', async () => {
   const browser = fakeBrowser();
   const commands = createBrowserCommands(browser);
   const [{id}] = await commands('tab-list', []);
@@ -374,7 +266,7 @@ test('rendered-page commands use the selected Puppeteer page and preserve Unicod
   assert.equal(browser.original.url(), 'https://example.test/existing');
 });
 
-test('one shared session reuses the same browser and disconnect leaves tabs open', async t => {
+test('one shared session reuses the same browser and disconnect closes it', async t => {
   let connections = 0;
   const browser = fakeBrowser();
   const {runtime, session} = await sessionFixture(t, {connectBrowser: async () => { connections++; return browser; }});
@@ -388,8 +280,7 @@ test('one shared session reuses the same browser and disconnect leaves tabs open
   assert.equal(lstatSync(socketPath(runtime)).mode & 0o777, 0o600);
   await sendRequest(runtime, {command: 'disconnect', args: []});
   await session.stop();
-  assert.equal(browser.disconnectCount, 1);
-  assert.ok(browser.tabPages.every(page => !page.closed));
+  assert.equal(browser.closeCount, 1);
   assert.equal((await sessionStatus(runtime)).state, 'missing');
 });
 
@@ -418,8 +309,8 @@ test('explicit disconnect waits for pending page actions to complete', async t =
     events.push('action-complete');
     return 'done';
   };
-  const disconnectBrowser = browser.disconnect;
-  browser.disconnect = async () => { events.push('disconnect'); await disconnectBrowser(); };
+  const closeBrowser = browser.close;
+  browser.close = async () => { events.push('close'); await closeBrowser(); };
   const [{id}] = await sendRequest(runtime, {command: 'tab-list', args: []});
   await sendRequest(runtime, {command: 'tab-select', args: [id]});
   const action = sendRequest(runtime, {command: 'eval', args: ['document.title']});
@@ -433,8 +324,7 @@ test('explicit disconnect waits for pending page actions to complete', async t =
     await Promise.all([action, disconnect]);
   }
   await session.stop();
-  assert.deepEqual(events, ['action-start', 'action-complete', 'disconnect']);
-  assert.equal(browser.original.closed, false);
+  assert.deepEqual(events, ['action-start', 'action-complete', 'close']);
 });
 
 test('a stuck page command times out even when explicit disconnect is queued', async t => {
@@ -451,8 +341,7 @@ test('a stuck page command times out even when explicit disconnect is queued', a
   await timedOut;
   assert.equal((await disconnected).state, 'disconnected');
   await session.stop();
-  assert.equal(browser.disconnectCount, 1);
-  assert.equal(browser.original.closed, false);
+  assert.equal(browser.closeCount, 1);
 });
 
 test('a queued command cannot start after its client disconnects', async t => {
@@ -478,17 +367,7 @@ test('a queued command cannot start after its client disconnects', async t => {
   assert.equal(browser.original.actions.some(action => action[0] === 'press'), false);
 });
 
-test('profile inspection has the same deadline as a page command', async t => {
-  const {runtime, browser, session} = await sessionFixture(t, {commandTimeout: 20,
-    bindProfile: async () => ({check: () => new Promise(() => {})}),
-  });
-  await session.ready;
-  await assert.rejects(sendRequest(runtime, {command: 'ensure', args: []}), {exitCode: 124});
-  await session.stop();
-  assert.equal(browser.connected, false);
-});
-
-test('connection timeout removes the socket and disconnects a late browser', async t => {
+test('connection timeout removes the socket and closes a late browser', async t => {
   let finish;
   const browser = fakeBrowser();
   const {runtime, session} = await sessionFixture(t, {connectTimeout: 20, connectBrowser: () => new Promise(resolve => { finish = resolve; })});
@@ -496,7 +375,7 @@ test('connection timeout removes the socket and disconnects a late browser', asy
   await session.stop();
   finish(browser);
   await delay(10);
-  assert.equal(browser.disconnectCount, 1);
+  assert.equal(browser.closeCount, 1);
   assert.equal(existsSync(socketPath(runtime)), false);
 });
 
@@ -520,7 +399,7 @@ test('a command timeout keeps the connection and holds later commands until the 
   await press;
   assert.deepEqual(events, ['slow-start', 'slow-end', 'press']);
   assert.equal(browser.connected, true);
-  assert.equal(browser.disconnectCount, 0);
+  assert.equal(browser.closeCount, 0);
   assert.equal((await sendRequest(runtime, {command: 'ensure', args: []})).state, 'ready');
 });
 
@@ -533,7 +412,7 @@ test('Chrome shutdown releases commands queued behind a timed-out command', asyn
   await assert.rejects(sendRequest(runtime, {command: 'eval', args: ['document.title']}), {exitCode: 124});
   const press = assert.rejects(sendRequest(runtime, {command: 'press', args: ['Enter']}), {exitCode: 4});
   await delay(10);
-  await browser.disconnect();
+  browser.exit();
   await press;
   await session.stop();
 });
@@ -547,28 +426,26 @@ test('a command stuck past the hard limit ends the connection and blocks further
   await assert.rejects(sendRequest(runtime, {command: 'eval', args: ['document.title']}), {exitCode: 124});
   await assert.rejects(sendRequest(runtime, {command: 'press', args: ['Enter']}), {exitCode: 4});
   assert.equal(browser.connected, false);
-  assert.equal(browser.disconnectCount, 1);
-  assert.equal(browser.original.closed, false);
+  assert.equal(browser.closeCount, 1);
 });
 
 test('Chrome shutdown ends the session and cannot trigger an automatic reconnect', async t => {
   const {runtime, browser, session} = await sessionFixture(t);
   await session.ready;
-  await browser.disconnect();
+  browser.exit();
   await session.stop();
   assert.equal((await sessionStatus(runtime)).state, 'missing');
   await assert.rejects(sendRequest(runtime, {command: 'snapshot', args: []}), {exitCode: 4});
 });
 
-test('a failed browser disconnect still removes the session socket and reports failure', async t => {
+test('a failed browser close still removes the session socket and reports failure', async t => {
   const runtime = temporary(t);
   const browser = fakeBrowser();
-  browser.disconnect = async () => { throw new Error('disconnect failed'); };
+  browser.close = async () => { throw new Error('close failed'); };
   const session = await startSession({runtime, release: 'test-release', connectBrowser: async () => browser});
   await session.ready;
-  await assert.rejects(session.stop(), /disconnect failed/);
+  await assert.rejects(session.stop(), /close failed/);
   assert.equal(existsSync(socketPath(runtime)), false);
-  assert.equal(browser.original.closed, false);
 });
 
 test('malformed and oversized socket requests cannot execute page actions', async t => {
@@ -593,12 +470,25 @@ test('malformed and oversized socket requests cannot execute page actions', asyn
 test('CLI help is available without setup and rejects unknown commands without browser access', t => {
   const runtime = temporary(t);
   const cli = fileURLToPath(new URL('../skills/play-my-chrome/scripts/cli.mjs', import.meta.url));
-  const env = {...process.env, PLAY_MY_CHROME_RUNTIME_DIR: runtime};
+  const env = {...process.env, PLAY_MY_CHROME_RUNTIME_DIR: runtime, PLAY_MY_CHROME_PROFILE_DIR: join(runtime, 'profile')};
   const help = execFileSync(process.execPath, [cli, '--help'], {encoding: 'utf8', env});
   assert.match(help, /needs no extension or token/);
   assert.equal(execFileSync(process.execPath, [cli, '--version'], {encoding: 'utf8', env}).trim(), lockedVersion());
   assert.throws(() => execFileSync(process.execPath, [cli, 'close-all'], {env, stdio: 'pipe'}));
   assert.deepEqual(readdirSync(runtime), ['.play-my-chrome-runtime']);
+});
+
+test('login refuses while a session holds the private profile', async t => {
+  const runtime = join(temporary(t), 'runtime');
+  prepareRuntime(runtime);
+  const session = await startSession({runtime, release: 'test-release', connectBrowser: async () => fakeBrowser()});
+  t.after(() => session.stop());
+  await session.ready;
+  const cli = fileURLToPath(new URL('../skills/play-my-chrome/scripts/cli.mjs', import.meta.url));
+  const profile = join(runtime, '..', 'profile');
+  const env = {...process.env, PLAY_MY_CHROME_RUNTIME_DIR: runtime, PLAY_MY_CHROME_PROFILE_DIR: profile};
+  await assert.rejects(promisify(execFile)(process.execPath, [cli, 'login'], {env}), error => error.code === 2 && /Run disconnect before login/.test(error.stderr));
+  assert.equal(existsSync(profile), false);
 });
 
 test('deadline cleanup reports timeout and clears its timer on normal completion', async () => {

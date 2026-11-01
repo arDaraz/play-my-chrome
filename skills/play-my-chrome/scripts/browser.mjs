@@ -27,7 +27,7 @@ class BrowserCommands {
   sequence = 0;
   scriptSequence = 0;
 
-  constructor(browser, profileScope) { this.browser = browser; this.profileScope = profileScope; }
+  constructor(browser) { this.browser = browser; }
 
   tabId(page) {
     if (!this.tabs.has(page)) this.tabs.set(page, String(++this.sequence));
@@ -46,9 +46,7 @@ class BrowserCommands {
   }
 
   async listTabs() {
-    const scopedPages = await Promise.all((await this.browser.pages()).map(async page =>
-      !this.profileScope || await this.profileScope.includes(page) ? page : undefined));
-    return Promise.all(scopedPages.filter(Boolean).map(async page => ({
+    return Promise.all((await this.browser.pages()).map(async page => ({
       id: this.tabId(page), selected: page === this.selected, owned: this.ownedTabs.has(page),
       url: page.url(), title: await page.title(),
     })));
@@ -56,8 +54,6 @@ class BrowserCommands {
 
   async newTab([url = 'about:blank']) {
     const page = await this.browser.newPage();
-    try { await this.profileScope?.assertPage(page); }
-    catch (error) { await page.close(); throw error; }
     this.ownedTabs.add(page);
     this.select(page);
     if (url !== 'about:blank') await page.goto(url, {waitUntil: 'domcontentloaded'});
@@ -67,14 +63,13 @@ class BrowserCommands {
   async selectTab([id]) {
     const page = [...this.tabs].find(([tab, storedId]) => storedId === id && !tab.isClosed())?.[0];
     if (!page) throw new SkillError('The tab ID is unavailable. Run tab-list again.');
-    await this.profileScope?.assertPage(page);
     this.select(page);
     return {id: this.tabId(page), url: page.url()};
   }
 
   async closeTab() {
     const page = this.selectedPage();
-    if (!this.ownedTabs.has(page)) throw new SkillError('tab-close only closes tabs created by this skill. Close existing user tabs in Chrome.');
+    if (!this.ownedTabs.has(page)) throw new SkillError('tab-close only closes tabs created during this connection.');
     await page.close();
     this.ownedTabs.delete(page);
     this.tabs.delete(page);
@@ -105,8 +100,8 @@ class BrowserCommands {
   }
 }
 
-export function createBrowserCommands(browser, profileScope) {
-  const controller = new BrowserCommands(browser, profileScope);
+export function createBrowserCommands(browser) {
+  const controller = new BrowserCommands(browser);
   const commands = {
     'tab-list': () => controller.listTabs(), 'tab-new': args => controller.newTab(args),
     'tab-select': args => controller.selectTab(args), 'tab-close': () => controller.closeTab(),
@@ -119,7 +114,6 @@ export function createBrowserCommands(browser, profileScope) {
   };
   return async (command, args) => {
     validateCommand(command, args);
-    if (!['tab-new', 'tab-list', 'tab-select'].includes(command)) await profileScope?.assertPage(controller.selectedPage());
     return commands[command](args);
   };
 }

@@ -35,12 +35,9 @@ class ChromeSession {
   state = 'connecting';
   queue = Promise.resolve();
 
-  constructor({runtime, release, profile, checkProfile, bindProfile, connectBrowser, connectTimeout, commandTimeout, stuckTimeout}) {
+  constructor({runtime, release, connectBrowser, connectTimeout, commandTimeout, stuckTimeout}) {
     this.path = socketPath(runtime);
     this.release = release;
-    this.profile = profile;
-    this.checkProfile = checkProfile;
-    this.bindProfile = bindProfile;
     this.connectBrowser = connectBrowser;
     this.connectTimeout = connectTimeout;
     this.commandTimeout = commandTimeout;
@@ -62,19 +59,17 @@ class ChromeSession {
 
   async attach() {
     this.browser = await this.connectBrowser();
-    if (this.state === 'disconnected') { await this.browser.disconnect(); return; }
+    if (this.state === 'disconnected') { await this.browser.close(); return; }
     this.browser.on('disconnected', () => this.stopInBackground());
-    this.profileScope = await this.bindProfile?.(this.browser);
-    if (this.state === 'disconnected') { await this.detachBrowser(); return; }
-    this.commands = createBrowserCommands(this.browser, this.profileScope);
+    this.commands = createBrowserCommands(this.browser);
     this.state = 'ready';
   }
 
-  detachBrowser() {
-    this.detaching ??= Promise.resolve().then(async () => {
-      if (this.browser?.connected) await this.browser.disconnect();
+  closeBrowser() {
+    this.closing ??= Promise.resolve().then(async () => {
+      if (this.browser?.connected) await this.browser.close();
     });
-    return this.detaching;
+    return this.closing;
   }
 
   stop() {
@@ -82,7 +77,7 @@ class ChromeSession {
     this.markStopped();
     this.stopping ??= Promise.resolve().then(async () => {
       try {
-        await this.detachBrowser();
+        await this.closeBrowser();
       } finally {
         if (lstatSync(this.path, {throwIfNoEntry: false})?.ino === this.socketIdentity.ino) unlinkSync(this.path);
         await new Promise(resolve => this.server.close(resolve));
@@ -110,7 +105,7 @@ class ChromeSession {
   }
 
   async disconnect() {
-    try { await this.detachBrowser(); }
+    try { await this.closeBrowser(); }
     finally { this.stopInBackground(); }
     return {state: 'disconnected'};
   }
@@ -121,8 +116,6 @@ class ChromeSession {
   }
 
   async executeCommand(request) {
-    this.checkProfile?.();
-    await this.profileScope?.check();
     if (['connect', 'ensure'].includes(request.command)) return this.status();
     return this.commands(request.command, request.args);
   }
@@ -138,7 +131,7 @@ class ChromeSession {
     return started.then(({reply}) => reply);
   }
 
-  status() { return {state: this.state, release: this.release, profile: this.profile}; }
+  status() { return {state: this.state, release: this.release}; }
 }
 
 export async function startSession({connectTimeout = 60000, commandTimeout = defaultCommandTimeout, stuckTimeout = defaultStuckTimeout, ...options}) {

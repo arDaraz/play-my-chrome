@@ -57,8 +57,26 @@ jobs:
           node --input-type=module -e '
             const {installedPuppeteer} = await import(process.argv[1]);
             const puppeteer = installedPuppeteer(process.env.PLAY_MY_CHROME_RUNTIME_DIR);
-            if (typeof puppeteer.connect !== "function") throw new Error("Puppeteer connect is missing");
+            if (typeof puppeteer.launch !== "function") throw new Error("Puppeteer launch is missing");
           ' "$GITHUB_WORKSPACE/skills/play-my-chrome/scripts/runtime.mjs"
+
+      - name: Smoke-test the pipe launch on a temporary profile
+        run: |
+          smoke_root="$(mktemp -d)"
+          chmod 700 "$smoke_root"
+          export PLAY_MY_CHROME_RUNTIME_DIR="$smoke_root/runtime"
+          export PLAY_MY_CHROME_PROFILE_DIR="$smoke_root/profile"
+          export PLAY_MY_CHROME_NODE="$(command -v node)"
+          wrapper="$GITHUB_WORKSPACE/skills/play-my-chrome/scripts/play-my-chrome.sh"
+          "$wrapper" setup
+          "$wrapper" connect
+          "$wrapper" tab-new 'data:text/html,<h1>pipe</h1>'
+          test "$("$wrapper" eval 'document.querySelector("h1").textContent')" = '"pipe"'
+          "$wrapper" disconnect
+          if pgrep -f -- "--user-data-dir=$PLAY_MY_CHROME_PROFILE_DIR"; then
+            echo "Chrome still uses the profile after disconnect." >&2
+            exit 1
+          fi
 
       - name: Verify Vercel Skills discovery
         run: |
