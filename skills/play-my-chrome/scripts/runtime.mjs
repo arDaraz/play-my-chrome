@@ -27,26 +27,26 @@ export function assertPrivate(path, kind) {
 }
 
 export function prepareRuntime(runtime) {
-  mkdirSync(dirname(runtime), {recursive: true});
-  if (!lstatSync(runtime, {throwIfNoEntry: false})) mkdirSync(runtime, {mode: 0o700});
-  assertPrivate(runtime, 'directory');
   if (Buffer.byteLength(join(runtime, 'session.sock')) > 100) {
     throw new SkillError('The runtime path is too long for a local socket. Set PLAY_MY_CHROME_RUNTIME_DIR to a shorter private absolute path.', 6);
   }
-  claimRuntime(runtime);
+  claimDirectory(runtime, '.play-my-chrome-runtime');
 }
 
-function claimRuntime(runtime) {
-  const marker = join(runtime, '.play-my-chrome-runtime');
+export function claimDirectory(directory, markerName) {
+  mkdirSync(dirname(directory), {recursive: true});
+  if (!lstatSync(directory, {throwIfNoEntry: false})) mkdirSync(directory, {mode: 0o700});
+  assertPrivate(directory, 'directory');
+  const marker = join(directory, markerName);
   const claim = 'play-my-chrome\n';
   const stat = lstatSync(marker, {throwIfNoEntry: false});
   if (!stat) {
-    if (readdirSync(runtime).length) throw new SkillError('The runtime directory contains unrelated files. Choose a dedicated empty directory.', 6);
+    if (readdirSync(directory).length) throw new SkillError(`${directory} contains unrelated files. Choose a dedicated empty directory.`, 6);
     writeFileSync(marker, claim, {mode: 0o600, flag: 'wx'});
     return;
   }
   if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600 || readFileSync(marker, 'utf8') !== claim) {
-    throw new SkillError('The runtime ownership marker is unsafe or belongs to another tool.', 6);
+    throw new SkillError(`The ownership marker in ${directory} is unsafe or belongs to another tool.`, 6);
   }
 }
 

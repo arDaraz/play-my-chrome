@@ -3,20 +3,19 @@ import {chmodSync, closeSync, constants, openSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
-import {chromePreflight, connectChrome} from './chrome.mjs';
+import {assertChromeAvailable, assertProfileIdle, chromePreflight, launchChrome, loginUrl, openLoginWindow, prepareProfile, profileDirectory} from './chrome.mjs';
 import {bounded, SkillError} from './errors.mjs';
 import {assertInstalled, installedPuppeteer, installPuppeteer, lockedVersion, prepareRuntime, releaseId, runtimeDirectory, withRuntimeLock} from './runtime.mjs';
 import {startSession, validateRequest} from './session.mjs';
 import {commandTimeout, sendRequest, sessionStatus} from './transport.mjs';
-import {assertDefaultProfile, createProfileScope, listProfiles, profileArgument, selectProfile} from './profiles.mjs';
 
 const help = `Usage: play-my-chrome.sh <command> [arguments]
   setup                     Install locked Puppeteer, without downloading Chrome
-  doctor                    Check installation, Chrome, and connection state
-  profile-list              List profile names and directory IDs
-  connect [--profile name]  Require a named profile; click Allow in Chrome
+  doctor                    Check installation, Chrome, profile, and session state
+  login [url]               Open a visible Chrome on the private profile to sign in
+  connect                   Launch headless Chrome on the private profile
   ensure                    Check the existing connection
-  disconnect                Disconnect Puppeteer; leave Chrome and tabs open
+  disconnect                Close the skill's Chrome and end the session
   tab-list                  List tabs with stable session IDs
   tab-new [url]             Create and select a tab
   tab-select <id>           Select a tab from tab-list
@@ -31,24 +30,27 @@ const help = `Usage: play-my-chrome.sh <command> [arguments]
   screenshot <absolute>     Save the selected tab's screenshot
   --version                 Print the locked Puppeteer version
 Each command has a ${commandTimeout / 1000}-second deadline; a timeout keeps the connection open.
-Native debugging: enable chrome://inspect/#remote-debugging in Chrome 144+.
-The skill never launches Chrome and needs no extension or token.`;
+The skill uses installed Chrome with a private profile over a debugging pipe.
+It never touches the normal Chrome profile and needs no extension or token.`;
 
-async function doctor(runtime) {
+async function doctor(runtime, profile) {
   const report = {puppeteer: lockedVersion(), runtime};
   try { assertInstalled(runtime); report.installation = 'ready'; }
   catch (error) { report.installation = error.message; }
-  try { report.chrome = chromePreflight().version; report.debugging = 'available'; }
-  catch (error) { report.chrome = error.message; report.debugging = 'unavailable'; }
+  try { assertChromeAvailable(); report.chrome = 'installed'; }
+  catch (error) { report.chrome = error.message; }
+  report.profile = {path: profile};
+  try { prepareProfile(profile); assertProfileIdle(profile); report.profile.state = 'idle'; }
+  catch (error) { report.profile.state = error.message; }
   report.session = await sessionStatus(runtime);
   return report;
 }
 
-async function spawnSession(runtime, profile) {
+async function spawnSession(runtime) {
   const logPath = join(runtime, 'daemon.log');
   const descriptor = openSync(logPath, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
   chmodSync(logPath, 0o600);
-  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--daemon', '--profile', profile.directory], {
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--daemon'], {
     detached: true, stdio: ['ignore', descriptor, descriptor], cwd: runtime,
   });
   closeSync(descriptor);
@@ -62,21 +64,26 @@ async function spawnSession(runtime, profile) {
   throw new SkillError('The session did not start within five seconds.', 124);
 }
 
-async function connect(runtime, selector) {
-  const profile = selectProfile(selector);
-  assertDefaultProfile(profile);
+async function connect(runtime, profile) {
   await withRuntimeLock(runtime, async () => {
     const status = await sessionStatus(runtime);
     if (status.state !== 'missing') {
       if (status.release !== releaseId()) throw new SkillError('An older skill session is active. Run disconnect, then setup and connect.', 2);
-      if (status.profile.directory !== profile.directory) throw new SkillError('The session uses another profile. Run disconnect before switching profiles.', 5);
       return;
     }
     assertInstalled(runtime);
-    chromePreflight();
-    await spawnSession(runtime, profile);
+    chromePreflight(profile);
+    await spawnSession(runtime);
   });
   return sendRequest(runtime, {command: 'connect', args: []});
+}
+
+async function login(runtime, profile, url) {
+  return withRuntimeLock(runtime, async () => {
+    if ((await sessionStatus(runtime)).state !== 'missing') throw new SkillError('Run disconnect before login. Both cannot use the private profile at once.', 2);
+    chromePreflight(profile);
+    return openLoginWindow(profile, url);
+  });
 }
 
 async function setup(runtime) {
@@ -87,30 +94,28 @@ async function setup(runtime) {
   });
 }
 
-async function daemon(runtime, selector) {
-  const profile = selectProfile(selector);
-  const session = await startSession({runtime, release: releaseId(), profile,
-    checkProfile: () => assertDefaultProfile(profile),
-    bindProfile: browser => createProfileScope(browser, profile),
-    connectBrowser: () => connectChrome(installedPuppeteer(runtime), () => {
-      assertDefaultProfile(profile);
-      return chromePreflight();
-    }),
+async function daemon(runtime, profile) {
+  const session = await startSession({runtime, release: releaseId(),
+    connectBrowser: () => {
+      chromePreflight(profile);
+      return launchChrome(installedPuppeteer(runtime), profile);
+    },
   });
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.once(signal, () => { void bounded(session.stop(), 2000).finally(() => process.exit(0)); });
   }
   try { await session.ready; }
   catch (error) {
-    process.stderr.write('Native Chrome connection failed. Check the debugging setting and Allow dialog.\n');
+    process.stderr.write(`Chrome launch failed: ${error.message}\n`);
     await bounded(session.stop(), 2000).finally(() => process.exit(error.exitCode ?? 1));
   }
 }
 
 async function dispatch(runtime, command, args) {
-  if (command === '--daemon') return daemon(runtime, profileArgument(args));
-  if (command === 'connect') return connect(runtime, profileArgument(args));
-  const local = {doctor: () => doctor(runtime), setup: () => setup(runtime), 'profile-list': () => listProfiles()};
+  const profile = profileDirectory();
+  if (command === 'login') return login(runtime, profile, loginUrl(args));
+  const local = {doctor: () => doctor(runtime, profile), setup: () => setup(runtime),
+    connect: () => connect(runtime, profile), '--daemon': () => daemon(runtime, profile)};
   if (Object.hasOwn(local, command)) {
     if (args.length) throw new SkillError(`${command} takes no arguments.`);
     return local[command]();

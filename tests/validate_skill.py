@@ -120,9 +120,12 @@ for path in repo_root.rglob("*"):
 
 for path in (skill_dir / "scripts").glob("*"):
     content = path.read_text(encoding="utf-8")
-    if re.search(r"\b(?:puppeteer|browser)\.launch\s*\(|browser\.close\s*\(", content):
-        fail(f"browser launch or shutdown found in {path.name}")
+    if re.search(r"remote-debugging-port|browserWSEndpoint|browserURL|puppeteer\.connect\s*\(", content):
+        fail(f"network debugging endpoint found in {path.name}; use the launch pipe")
     if "PLAYWRIGHT" in content or "Keychain" in content or "pbpaste" in content:
         fail(f"obsolete extension runtime found in {path.name}")
+
+if "pipe: true" not in (skill_dir / "scripts" / "chrome.mjs").read_text(encoding="utf-8"):
+    fail("chrome.mjs must launch Chrome over --remote-debugging-pipe")
 
 print("Agent Skill validation passed.")

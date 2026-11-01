@@ -1,7 +1,7 @@
 {
   "name": "play-my-chrome-runtime",
   "private": true,
-  "description": "Locked Puppeteer for the native Chrome connection",
+  "description": "Locked Puppeteer for the private Chrome profile",
   "license": "MIT",
   "engines": {
     "node": ">=22.20.0"

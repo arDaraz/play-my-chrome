@@ -1,4 +1,4 @@
 interface:
   display_name: "Play My Chrome"
-  short_description: "Control signed-in Chrome with native debugging"
-  default_prompt: "Use $play-my-chrome to complete this task in my existing signed-in Chrome session."
+  short_description: "Control Chrome on a private signed-in profile"
+  default_prompt: "Use $play-my-chrome to complete this task in its signed-in Chrome profile."
